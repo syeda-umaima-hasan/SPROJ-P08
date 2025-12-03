@@ -11,21 +11,32 @@ async function fetch_json(url, { timeout_ms = 12000, retry = 1, headers = {} } =
       const res = await axios.get(url, {
         headers,
         timeout: timeout_ms,
-        validateStatus: () => true // Don't throw on any status code
+        validateStatus: () => true, // Don't throw on any status code
+        maxRedirects: 5
       });
       if (res.status >= 200 && res.status < 300) {
+        // Validate response data exists
+        if (res.data === undefined || res.data === null) {
+          console.error('Empty response data from:', url);
+          if (attempt === retry) {
+            return { ok: false, status: res.status, data: { error: 'Empty response from API' } };
+          }
+          continue;
+        }
         return { ok: true, status: res.status, data: res.data };
       }
       // Return structured error so caller can decide
       return { ok: false, status: res.status, data: res.data || { error: 'Request failed' } };
     } catch (e) {
+      console.error(`Fetch attempt ${attempt + 1} failed for ${url}:`, e?.message || e);
       if (attempt === retry) {
-        return { ok: false, status: undefined, data: { error: e?.message || 'network' } };
+        return { ok: false, status: undefined, data: { error: e?.message || 'network error' } };
       }
       // brief backoff before retry
       await new Promise(r => setTimeout(r, 300));
     }
   }
+  return { ok: false, status: undefined, data: { error: 'Max retries exceeded' } };
 }
 
 /** Build label via reverse geocoding (best-effort). Never throws. */
@@ -90,37 +101,87 @@ router.get('/', async (req, res) => {
       `&forecast_days=1&timezone=auto`;
 
     // Forecast first (primary)
+    console.log('Fetching weather from:', weather_url);
     const w = await fetch_json(weather_url, { timeout_ms: 12000, retry: 1, headers });
+    console.log('Weather API response status:', w.ok, w.status);
+    
     if (!w.ok) {
+      console.error('Weather API error:', w.status, JSON.stringify(w.data, null, 2));
       const safe_message =
         w.status === 429
           ? 'Upstream weather service rate-limited. Please try again shortly.'
           : w.status
           ? `Upstream weather service error (${w.status}).`
-          : 'Network error contacting weather service.';
-      res.status(500).json({ message: 'Failed to fetch weather', detail: safe_message });
+          : w.data?.error || 'Network error contacting weather service.';
+      res.status(500).json({ 
+        message: 'Failed to fetch weather', 
+        detail: safe_message,
+        api_status: w.status,
+        api_error: w.data
+      });
       return;
     }
 
-    const wd = w.data || {};
-    const current = wd.current_weather || {};
-    const daily = wd.daily || {};
+    // Validate response structure
+    if (!w.data || typeof w.data !== 'object') {
+      console.error('Invalid weather API response type:', typeof w.data, w.data);
+      res.status(500).json({ 
+        message: 'Failed to fetch weather', 
+        detail: 'Invalid response from weather service',
+        response_type: typeof w.data
+      });
+      return;
+    }
 
+    const wd = w.data;
+    console.log('Weather data keys:', Object.keys(wd));
+    
+    // Safely extract nested objects
+    const current = (wd.current_weather && typeof wd.current_weather === 'object') ? wd.current_weather : {};
+    const daily = (wd.daily && typeof wd.daily === 'object') ? wd.daily : {};
+
+    // Validate that we have the expected data structure
+    if (!daily || typeof daily !== 'object' || Object.keys(daily).length === 0) {
+      console.error('Missing daily weather data in response:', JSON.stringify(wd, null, 2));
+      res.status(500).json({ 
+        message: 'Failed to fetch weather', 
+        detail: 'Weather service returned incomplete data' 
+      });
+      return;
+    }
+
+    // Safely extract today's data with null checks
     const today = {
-      precipitation_mm: Array.isArray(daily.precipitation_sum) ? daily.precipitation_sum[0] : null,
-      tmax_c: Array.isArray(daily.temperature_2m_max) ? daily.temperature_2m_max[0] : null,
-      tmin_c: Array.isArray(daily.temperature_2m_min) ? daily.temperature_2m_min[0] : null,
-      uv_index_max: Array.isArray(daily.uv_index_max) ? daily.uv_index_max[0] : null,
-      wind_gust_max_kmh: Array.isArray(daily.wind_gusts_10m_max) ? daily.wind_gusts_10m_max[0] : null,
+      precipitation_mm: (daily.precipitation_sum && Array.isArray(daily.precipitation_sum) && daily.precipitation_sum.length > 0) 
+        ? daily.precipitation_sum[0] 
+        : null,
+      tmax_c: (daily.temperature_2m_max && Array.isArray(daily.temperature_2m_max) && daily.temperature_2m_max.length > 0) 
+        ? daily.temperature_2m_max[0] 
+        : null,
+      tmin_c: (daily.temperature_2m_min && Array.isArray(daily.temperature_2m_min) && daily.temperature_2m_min.length > 0) 
+        ? daily.temperature_2m_min[0] 
+        : null,
+      uv_index_max: (daily.uv_index_max && Array.isArray(daily.uv_index_max) && daily.uv_index_max.length > 0) 
+        ? daily.uv_index_max[0] 
+        : null,
+      wind_gust_max_kmh: (daily.wind_gusts_10m_max && Array.isArray(daily.wind_gusts_10m_max) && daily.wind_gusts_10m_max.length > 0) 
+        ? daily.wind_gusts_10m_max[0] 
+        : null,
     };
 
     const current_block = {
-      temperature_c: typeof current.temperature === 'number' ? current.temperature : null,
-      wind_speed_kmh: typeof current.windspeed === 'number' ? current.windspeed : null,
+      temperature_c: (current && typeof current.temperature === 'number') ? current.temperature : null,
+      wind_speed_kmh: (current && typeof current.windspeed === 'number') ? current.windspeed : null,
     };
 
     // Best-effort label (does not affect success)
-    const city_label = await reverse_label(latitude, longitude);
+    let city_label = 'Current location';
+    try {
+      city_label = await reverse_label(latitude, longitude);
+    } catch (labelError) {
+      console.warn('Reverse geocoding failed (non-critical):', labelError?.message || labelError);
+      // Continue with default label
+    }
 
     // Advice (same as your original)
     const advice = [];
@@ -156,9 +217,11 @@ router.get('/', async (req, res) => {
     });
   } catch (error) {
     console.error('Weather route error:', error);
+    console.error('Error stack:', error?.stack);
     res.status(500).json({ 
       message: 'Failed to fetch weather', 
-      detail: error?.message || 'Internal server error' 
+      detail: error?.message || 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error?.stack : undefined
     });
   }
 });
