@@ -63,8 +63,9 @@ router.post('/', upload.single('image'), async (req, res) => {
     }
     
     // Save diagnosis to database
+    let diagnosis_record = null
     try {
-      const diagnosis_record = new Diagnosis({
+      diagnosis_record = new Diagnosis({
         user_id: auth_user.userId,
         diagnosis: ml_resp.data.diagnosis,
         confidence: ml_resp.data.confidence,
@@ -78,7 +79,13 @@ router.post('/', upload.single('image'), async (req, res) => {
       // Continue even if saving fails - user still gets result
     }
     
-    res.json(ml_resp.data)
+    // Return ML response with diagnosis ID if saved
+    const response_data = { ...ml_resp.data }
+    if (diagnosis_record && diagnosis_record._id) {
+      response_data.diagnosisId = diagnosis_record._id.toString()
+    }
+    
+    res.json(response_data)
   } catch (err) {
     const status = err && err.response && err.response.status ? err.response.status : null
     const data = err && err.response && err.response.data ? err.response.data : null

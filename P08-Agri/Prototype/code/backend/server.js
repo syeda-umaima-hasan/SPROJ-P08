@@ -203,6 +203,31 @@ if (history_mounted === false) {
   })
 }
 
+// ===== Chat router =====
+const chat_router_path = path.resolve(__dirname, 'routes', 'chat.js')
+const chat_exists = fs.existsSync(chat_router_path)
+let chat_mounted = false
+
+try {
+  if (chat_exists === true) {
+    const chat_router = require(chat_router_path)
+    app.use('/api/chat', chat_router)
+    chat_mounted = true
+    console.log('Chat router mounted successfully')
+  } else {
+    console.warn('Chat router file not found:', chat_router_path)
+  }
+} catch (error) {
+  console.error('Failed to mount chat router:', error.message || error)
+}
+
+if (chat_mounted === false) {
+  app.post('/api/chat', function (request, response) {
+    const payload = { ok: false, message: 'Chat router not mounted' }
+    response.status(501).json(payload)
+  })
+}
+
 // ===== Error handler =====
 app.use(function (error, request, response, next) {
   const is_cors_error = error && error.message === 'Not allowed by CORS'

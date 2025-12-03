@@ -4,6 +4,7 @@ import { fetch_weather_by_coords } from '../../services/weatherService'
 import { diagnose_image } from '../../services/diagnoseService'
 import { send_complaint } from '../../services/helpService'
 import { changePassword } from '../../services/authService'
+import WheatChatbot from '../../components/WheatChatbot'
 
 function FarmerDashboard() {
   const navigate = useNavigate()
@@ -19,6 +20,7 @@ function FarmerDashboard() {
   const [is_uploading, set_is_uploading] = useState(false)
   const [diagnose_error, set_diagnose_error] = useState('')
   const [diagnose_result, set_diagnose_result] = useState(null)
+  const [show_chatbot, set_show_chatbot] = useState(false)
   const file_input_ref = useRef(null)
 
   const [is_help_open, set_is_help_open] = useState(false)
@@ -436,6 +438,16 @@ function FarmerDashboard() {
                       )}
                     <div className="text-sm text-gray-600">
                       Processing time: {diagnose_result.processing_ms} ms
+                    </div>
+                    <div className="mt-4 pt-4 border-t border-gray-200">
+                      <button
+                        type="button"
+                        onClick={() => set_show_chatbot(true)}
+                        className="w-full px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-600 flex items-center justify-center gap-2"
+                      >
+                        <span>💬</span>
+                        <span>Ask Questions About This Diagnosis</span>
+                      </button>
                     </div>
                   </div>
                 )}
@@ -931,6 +943,14 @@ function FarmerDashboard() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Wheat Chatbot */}
+      {show_chatbot && diagnose_result && (
+        <WheatChatbot 
+          diagnosis={diagnose_result} 
+          onClose={() => set_show_chatbot(false)} 
+        />
       )}
     </div>
   )
