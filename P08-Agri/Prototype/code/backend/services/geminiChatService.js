@@ -7,7 +7,8 @@ if (!apiKey) {
 }
 
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
-const modelName = process.env.GEMINI_MODEL || 'gemini-pro';
+// Use gemini-1.5-flash (faster, free) or gemini-1.5-pro (better quality)
+const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
 
 /**
  * Generate a chat response using Google Gemini API
@@ -21,7 +22,9 @@ async function generateChatResponse(question, diagnosisContext) {
   }
 
   try {
-    const model = genAI.getGenerativeModel({ model: modelName });
+    // gemini-pro is deprecated, use gemini-1.5-flash (current free model) or gemini-1.5-pro
+    const actualModelName = modelName === 'gemini-pro' ? 'gemini-1.5-flash' : modelName;
+    const model = genAI.getGenerativeModel({ model: actualModelName });
 
     // Build the prompt with diagnosis context
     const prompt = buildPrompt(question, diagnosisContext);
