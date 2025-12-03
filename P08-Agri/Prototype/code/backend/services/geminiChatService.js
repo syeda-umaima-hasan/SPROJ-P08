@@ -7,8 +7,8 @@ if (!apiKey) {
 }
 
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
-// Use gemini-1.5-flash (faster, free) or gemini-1.5-pro (better quality)
-const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+// Use gemini-1.5-flash-001 (specific version) or gemini-1.5-pro-001
+const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash-001';
 
 /**
  * Generate a chat response using Google Gemini API
@@ -22,8 +22,18 @@ async function generateChatResponse(question, diagnosisContext) {
   }
 
   try {
-    // gemini-pro is deprecated, use gemini-1.5-flash (current free model) or gemini-1.5-pro
-    const actualModelName = modelName === 'gemini-pro' ? 'gemini-1.5-flash' : modelName;
+    // Map model names to correct format for v1beta API
+    // Google Gemini uses specific version numbers like -001, -002, etc.
+    let actualModelName = modelName;
+    
+    // Convert common model names to their specific version format
+    if (modelName === 'gemini-pro' || modelName === 'gemini-1.5-flash' || modelName === 'gemini-1.5-flash-latest') {
+      actualModelName = 'gemini-1.5-flash-001';
+    } else if (modelName === 'gemini-1.5-pro' || modelName === 'gemini-1.5-pro-latest') {
+      actualModelName = 'gemini-1.5-pro-001';
+    }
+    
+    console.log('Using Gemini model:', actualModelName);
     const model = genAI.getGenerativeModel({ model: actualModelName });
 
     // Build the prompt with diagnosis context
