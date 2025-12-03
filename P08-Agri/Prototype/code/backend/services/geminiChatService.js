@@ -21,46 +21,64 @@ async function generateChatResponse(question, diagnosisContext) {
     throw new Error('Gemini API key not configured. Please set GEMINI_API_KEY in environment variables.');
   }
 
-  try {
-    // Map deprecated model names to current models
-    // Use simple model names without version suffixes - SDK will resolve to latest
-    let actualModelName = modelName;
-    
-    // Convert deprecated or versioned names to simple format
-    if (modelName === 'gemini-pro' || 
-        modelName === 'gemini-1.5-flash-001' || 
-        modelName === 'gemini-1.5-flash-latest') {
-      actualModelName = 'gemini-1.5-flash';
-    } else if (modelName === 'gemini-1.5-pro-001' || 
-               modelName === 'gemini-1.5-pro-latest') {
-      actualModelName = 'gemini-1.5-pro';
-    }
-    
-    console.log('Using Gemini model:', actualModelName);
-    const model = genAI.getGenerativeModel({ model: actualModelName });
+  // List of models to try in order of preference
+  const modelsToTry = [
+    'gemini-pro',           // Original stable model
+    'gemini-1.5-flash',     // Fast model
+    'gemini-1.5-pro',       // Better quality model
+    'gemini-2.0-flash-exp', // Experimental newer model
+  ];
 
-    // Build the prompt with diagnosis context
-    const prompt = buildPrompt(question, diagnosisContext);
-
-    // Generate content
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
-
-    return text.trim();
-  } catch (error) {
-    console.error('Gemini API error:', error);
-    
-    // Handle specific Gemini errors
-    if (error.message?.includes('API key')) {
-      throw new Error('Invalid Gemini API key. Please check your configuration.');
-    }
-    if (error.message?.includes('quota') || error.message?.includes('rate limit')) {
-      throw new Error('Gemini API rate limit exceeded. Please try again in a moment.');
-    }
-    
-    throw new Error('Failed to generate response. Please try again.');
+  // Add user-specified model first if provided
+  let modelsToTest = [];
+  if (modelName && !modelsToTry.includes(modelName)) {
+    modelsToTest.push(modelName);
   }
+  modelsToTest = modelsToTest.concat(modelsToTry);
+
+  // Build the prompt once
+  const prompt = buildPrompt(question, diagnosisContext);
+
+  // Try each model until one works
+  let lastError = null;
+  for (const modelNameToTry of modelsToTest) {
+    try {
+      console.log(`Attempting to use Gemini model: ${modelNameToTry}`);
+      const model = genAI.getGenerativeModel({ model: modelNameToTry });
+
+      // Generate content
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const text = response.text();
+
+      console.log(`Successfully used model: ${modelNameToTry}`);
+      return text.trim();
+    } catch (error) {
+      console.error(`Model ${modelNameToTry} failed:`, error.message || error);
+      lastError = error;
+      
+      // If it's not a 404 (model not found), don't try other models
+      // It might be a different issue (API key, quota, etc.)
+      if (error.status !== 404 && !error.message?.includes('not found')) {
+        break;
+      }
+      // Continue to next model if this one wasn't found
+      continue;
+    }
+  }
+
+  // All models failed
+  console.error('All Gemini models failed. Last error:', lastError);
+  
+  // Handle specific Gemini errors
+  if (lastError?.message?.includes('API key')) {
+    throw new Error('Invalid Gemini API key. Please check your configuration.');
+  }
+  if (lastError?.message?.includes('quota') || lastError?.message?.includes('rate limit')) {
+    throw new Error('Gemini API rate limit exceeded. Please try again in a moment.');
+  }
+  
+  throw new Error('Failed to generate response. No available Gemini models found. Please check your API configuration.');
 }
 
 /**
