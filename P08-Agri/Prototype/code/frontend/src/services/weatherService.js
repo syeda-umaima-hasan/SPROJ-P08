@@ -25,6 +25,17 @@ export async function fetch_weather_by_coords(latitude, longitude) {
   }
 
   if (!res.ok) {
+    // Handle rate limiting (429) with better message
+    if (res.status === 429) {
+      const rateLimitMsg = 
+        (data && data.detail) || 
+        'Daily weather API limit exceeded. Please try again tomorrow.';
+      const error = new Error(rateLimitMsg);
+      error.isRateLimit = true;
+      throw error;
+    }
+    
+    // Handle other errors
     const msg =
       (data && (data.message || data.error || data.detail)) ||
       `Weather request failed (${res.status})`;

@@ -107,11 +107,24 @@ router.get('/', async (req, res) => {
     
     if (!w.ok) {
       console.error('Weather API error:', w.status, JSON.stringify(w.data, null, 2));
+      
+      // Handle rate limiting (429) with user-friendly message
+      if (w.status === 429) {
+        const rateLimitMessage = w.data?.reason || 
+          'Daily API request limit exceeded. The weather service has reached its daily limit. Please try again tomorrow.';
+        res.status(429).json({ 
+          message: 'Weather service temporarily unavailable', 
+          detail: rateLimitMessage,
+          error_type: 'rate_limit',
+          retry_after: 'tomorrow'
+        });
+        return;
+      }
+      
+      // Handle other errors
       const safe_message =
-        w.status === 429
-          ? 'Upstream weather service rate-limited. Please try again shortly.'
-          : w.status
-          ? `Upstream weather service error (${w.status}).`
+        w.status
+          ? `Weather service error (${w.status}): ${w.data?.reason || w.data?.error || 'Please try again later.'}`
           : w.data?.error || 'Network error contacting weather service.';
       res.status(500).json({ 
         message: 'Failed to fetch weather', 

@@ -75,7 +75,13 @@ function Dashboard() {
       const data = await fetch_weather_by_coords(latitude, longitude)
       set_weather_data(data)
     } catch (err) {
-      const msg = typeof err === 'string' ? err : err && err.message ? err.message : 'Failed to get weather'
+      let msg = typeof err === 'string' ? err : err && err.message ? err.message : 'Failed to get weather'
+      
+      // Show more user-friendly message for rate limit errors
+      if (err?.isRateLimit || msg.toLowerCase().includes('limit') || msg.toLowerCase().includes('tomorrow')) {
+        msg = '⚠️ Weather service daily limit reached. Please try again tomorrow. The free weather API has a daily request limit that has been exceeded.'
+      }
+      
       set_weather_error(msg)
     } finally {
       set_is_getting_weather(false)
