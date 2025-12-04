@@ -1,9 +1,10 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { fetch_weather_by_coords } from '../../services/weatherService'
 import { diagnose_image } from '../../services/diagnoseService'
 import { send_complaint } from '../../services/helpService'
 import { changePassword } from '../../services/authService'
+import { send_chat_message } from '../../services/chatService'
 
 function FarmerDashboard() {
   const navigate = useNavigate()
@@ -36,6 +37,12 @@ function FarmerDashboard() {
   const [cp_error_text, set_cp_error_text] = useState('')
   const [cp_success_text, set_cp_success_text] = useState('')
   const [is_changing_password, set_is_changing_password] = useState(false)
+
+  const [is_chat_open, set_is_chat_open] = useState(false)
+  const [chat_messages, set_chat_messages] = useState([])
+  const [chat_input, set_chat_input] = useState('')
+  const [is_sending_chat, set_is_sending_chat] = useState(false)
+  const [chat_error_text, set_chat_error_text] = useState('')
 
   function handle_logout() {
     localStorage.removeItem('token')
@@ -75,7 +82,7 @@ function FarmerDashboard() {
       const data = await fetch_weather_by_coords(coords.latitude, coords.longitude)
       set_weather_data(data)
     } catch (err) {
-      const msg = typeof err === 'string' ? err : err && err.message ? err.message : 'Failed to get weather'
+      const msg = typeof err === 'string' ? err : (err && err.message ? err.message : 'Failed to get weather')
       set_weather_error(msg)
     } finally {
       set_is_getting_weather(false)
@@ -95,6 +102,10 @@ function FarmerDashboard() {
       set_preview_url(URL.createObjectURL(file))
       set_diagnose_result(null)
       set_diagnose_error('')
+      set_is_chat_open(false)
+      set_chat_messages([])
+      set_chat_input('')
+      set_chat_error_text('')
     }
   }
 
@@ -106,6 +117,10 @@ function FarmerDashboard() {
     set_is_uploading(true)
     set_diagnose_error('')
     set_diagnose_result(null)
+    set_is_chat_open(false)
+    set_chat_messages([])
+    set_chat_input('')
+    set_chat_error_text('')
     try {
       const data = await diagnose_image(selected_file)
       set_diagnose_result(data)
@@ -116,6 +131,33 @@ function FarmerDashboard() {
       set_is_uploading(false)
     }
   }
+
+  useEffect(() => {
+    if (diagnose_result) {
+      const confidence =
+        typeof diagnose_result.confidence === 'number'
+          ? (diagnose_result.confidence * 100).toFixed(1)
+          : 'unknown'
+
+      const intro_message = {
+        role: 'assistant',
+        content:
+          `I have analyzed your wheat image. The diagnosis is "${diagnose_result.diagnosis}" ` +
+          (confidence !== 'unknown' ? `with about ${confidence}% confidence. ` : '') +
+          'You can ask me follow-up questions about this result, possible treatments, or anything about your crop.'
+      }
+
+      set_is_chat_open(true)
+      set_chat_messages([intro_message])
+      set_chat_input('')
+      set_chat_error_text('')
+    } else {
+      set_is_chat_open(false)
+      set_chat_messages([])
+      set_chat_input('')
+      set_chat_error_text('')
+    }
+  }, [diagnose_result])
 
   function open_help_modal() {
     set_help_subject('')
@@ -279,6 +321,51 @@ function FarmerDashboard() {
     }
   }
 
+  function handle_chat_input_change(e) {
+    set_chat_input(e.target.value)
+    if (chat_error_text) {
+      set_chat_error_text('')
+    }
+  }
+
+  async function handle_chat_submit(e) {
+    e.preventDefault()
+    if (is_sending_chat) {
+      return
+    }
+    const trimmed = chat_input.trim()
+    if (!trimmed) {
+      return
+    }
+    if (!diagnose_result) {
+      set_chat_error_text('Please run a diagnosis first.')
+      return
+    }
+
+    const user_message = { role: 'user', content: trimmed }
+    const next_messages = [...chat_messages, user_message]
+
+    set_chat_messages(next_messages)
+    set_chat_input('')
+    set_is_sending_chat(true)
+    set_chat_error_text('')
+
+    try {
+      const result = await send_chat_message({
+        diagnosis: diagnose_result,
+        messages: next_messages
+      })
+
+      const assistant_message = { role: 'assistant', content: result.content }
+      set_chat_messages((prev) => [...prev, assistant_message])
+    } catch (error) {
+      const message = error && error.message ? error.message : 'Failed to contact assistant'
+      set_chat_error_text(message)
+    } finally {
+      set_is_sending_chat(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white shadow">
@@ -382,6 +469,10 @@ function FarmerDashboard() {
                     set_preview_url('')
                     set_diagnose_result(null)
                     set_diagnose_error('')
+                    set_is_chat_open(false)
+                    set_chat_messages([])
+                    set_chat_input('')
+                    set_chat_error_text('')
                   }}
                   className="px-4 py-2 bg-gray-100 text-gray-900 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300"
                 >
@@ -403,7 +494,12 @@ function FarmerDashboard() {
                       Diagnosis:{' '}
                       <span className="font-semibold capitalize">{diagnose_result.diagnosis}</span>
                     </div>
-                    <div>Confidence: {(diagnose_result.confidence * 100).toFixed(1)}%</div>
+                    <div>
+                      Confidence:{' '}
+                      {typeof diagnose_result.confidence === 'number'
+                        ? (diagnose_result.confidence * 100).toFixed(1) + '%'
+                        : 'N/A'}
+                    </div>
                     {Array.isArray(diagnose_result.recommendations) &&
                       diagnose_result.recommendations.length > 0 && (
                         <div>
@@ -435,6 +531,59 @@ function FarmerDashboard() {
                 )}
                 {!diagnose_result && !diagnose_error && (
                   <p className="text-sm text-gray-600">Click Analyze to diagnose your wheat crop.</p>
+                )}
+
+                {is_chat_open && (
+                  <div className="mt-6 border-t pt-4">
+                    <h3 className="text-md font-semibold text-gray-900 mb-2">Chat with AgriQual Assistant</h3>
+                    <div className="h-64 bg-gray-50 rounded-md p-3 overflow-y-auto mb-3">
+                      {chat_messages.length === 0 && (
+                        <p className="text-sm text-gray-500">
+                          Ask follow-up questions about this diagnosis or your crop management.
+                        </p>
+                      )}
+                      {chat_messages.map((msg, index) => (
+                        <div
+                          key={index}
+                          className={`mb-2 flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                        >
+                          <div
+                            className={`max-w-[75%] rounded-lg px-3 py-2 text-sm ${
+                              msg.role === 'user'
+                                ? 'bg-green-600 text-white'
+                                : 'bg-white border border-gray-200 text-gray-900'
+                            }`}
+                          >
+                            {msg.content}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {chat_error_text && (
+                      <div className="mb-3 bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm">
+                        {chat_error_text}
+                      </div>
+                    )}
+
+                    <form className="flex gap-2" onSubmit={handle_chat_submit}>
+                      <input
+                        type="text"
+                        value={chat_input}
+                        onChange={handle_chat_input_change}
+                        disabled={is_sending_chat}
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent disabled:bg-gray-100 text-sm"
+                        placeholder="Ask a question about this diagnosis..."
+                      />
+                      <button
+                        type="submit"
+                        disabled={is_sending_chat || !chat_input.trim()}
+                        className="px-4 py-2 bg-green-500 text-white rounded-md hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-green-500 disabled:opacity-60 text-sm flex items-center justify-center"
+                      >
+                        {is_sending_chat ? 'Sending...' : 'Send'}
+                      </button>
+                    </form>
+                  </div>
                 )}
               </div>
             </div>

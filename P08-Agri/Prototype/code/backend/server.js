@@ -8,7 +8,6 @@ const { connect_redis } = require('./redis_client')
 
 const app = express()
 
-// ===== MongoDB connection =====
 const mongo_uri = process.env.MONGODB_URI || process.env.MONGO_URI
 
 if (!mongo_uri) {
@@ -23,7 +22,6 @@ if (!mongo_uri) {
       console.error('MongoDB connection error:', error.message || error)
     })
 }
-// ==============================
 
 const LOCAL_ORIGIN = 'http://localhost:3000'
 const PROD_ORIGIN = 'https://sproj-p08-silk.vercel.app'
@@ -41,11 +39,6 @@ function is_allowed_origin(origin) {
   if (origin === PROD_ORIGIN) {
     return true
   }
-
-  // const is_vercel_preview = VERCEL_PREVIEW_RE.test(origin)
-  // if (is_vercel_preview === true) {
-  //   return true
-  // }
 
   const is_string_origin = typeof origin === 'string'
   if (is_string_origin === true && origin.includes('.vercel.app')) {
@@ -88,7 +81,6 @@ app.get('/api/health', function (request, response) {
 const auth_router = require(path.resolve(__dirname, 'routes', 'auth.js'))
 app.use('/api/auth', auth_router)
 
-// ===== Weather router =====
 const weather_router_path = path.resolve(__dirname, 'routes', 'weather.js')
 const weather_exists = fs.existsSync(weather_router_path)
 let weather_mounted = false
@@ -108,7 +100,6 @@ if (weather_mounted === false) {
   })
 }
 
-// ===== Diagnose router =====
 const diagnose_router_path = path.resolve(__dirname, 'routes', 'diagnose.js')
 let diagnose_mounted = false
 
@@ -140,7 +131,6 @@ if (diagnose_mounted === false) {
   })
 }
 
-// ===== Help router =====
 const help_router_path = path.resolve(__dirname, 'routes', 'help.js')
 const help_exists = fs.existsSync(help_router_path)
 let help_mounted = false
@@ -160,7 +150,6 @@ if (help_mounted === false) {
   })
 }
 
-// ===== Account router (change password) =====
 const account_router_path = path.resolve(__dirname, 'routes', 'account.js')
 const account_exists = fs.existsSync(account_router_path)
 let account_mounted = false
@@ -180,7 +169,6 @@ if (account_mounted === false) {
   })
 }
 
-// ===== History router =====
 const history_router_path = path.resolve(__dirname, 'routes', 'history.js')
 const history_exists = fs.existsSync(history_router_path)
 let history_mounted = false
@@ -203,7 +191,27 @@ if (history_mounted === false) {
   })
 }
 
-// ===== Error handler =====
+const chat_router_path = path.resolve(__dirname, 'routes', 'chat.js')
+const chat_exists = fs.existsSync(chat_router_path)
+let chat_mounted = false
+
+try {
+  if (chat_exists === true) {
+    const chat_router = require(chat_router_path)
+    app.use('/api/chat', chat_router)
+    chat_mounted = true
+  }
+} catch (error) {
+  console.error('Failed to mount chat router:', error.message || error)
+}
+
+if (chat_mounted === false) {
+  app.post('/api/chat', function (request, response) {
+    const payload = { ok: false, message: 'Chat router not mounted' }
+    response.status(501).json(payload)
+  })
+}
+
 app.use(function (error, request, response, next) {
   const is_cors_error = error && error.message === 'Not allowed by CORS'
   if (is_cors_error === true) {
