@@ -22,12 +22,13 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Build (Maven)
-        run: mvn -B verify
+      - name: Build
+        run: echo "No Maven build – skipping"
 
       - name: Sonar analysis
         uses: SonarSource/sonarqube-scan-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
 
