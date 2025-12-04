@@ -5,9 +5,14 @@ const fromEnv =
   (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL) ||
   process.env.REACT_APP_API_BASE_URL
 
-const isLocalhost = typeof window !== 'undefined' && window.location.hostname === 'localhost'
-const isVercel = typeof window !== 'undefined' && /\.vercel\.app$/.test(window.location.hostname)
-const API_BASE = fromEnv || (isLocalhost ? 'http://localhost:5000' : (isVercel ? '' : 'https://sproj-p08-2.onrender.com'))
+const isLocalhost =
+  typeof window !== 'undefined' && window.location.hostname === 'localhost'
+const isVercel =
+  typeof window !== 'undefined' && /\.vercel\.app$/.test(window.location.hostname)
+
+const API_BASE =
+  fromEnv ||
+  (isLocalhost ? 'http://localhost:5000' : (isVercel ? '' : 'https://sproj-p08-2.onrender.com'))
 
 const API_URL = `${API_BASE}/api/auth`
 
@@ -26,7 +31,10 @@ export const register = async (userData) => {
     }
     return response.data
   } catch (error) {
-    const message = error?.response?.data?.message || error?.response?.data?.error || 'Registration failed'
+    const message =
+      error?.response?.data?.message ||
+      error?.response?.data?.error ||
+      'Registration failed'
     throw new Error(message)
   }
 }
@@ -37,7 +45,10 @@ export const registerWithOtp = async (userData) => {
     const response = await api.post('/register-otp', userData)
     return response.data
   } catch (error) {
-    const message = error?.response?.data?.message || error?.response?.data?.error || 'Registration failed'
+    const message =
+      error?.response?.data?.message ||
+      error?.response?.data?.error ||
+      'Registration failed'
     throw new Error(message)
   }
 }
@@ -51,7 +62,10 @@ export const verifyOtp = async ({ email, otp }) => {
     }
     return response.data
   } catch (error) {
-    const message = error?.response?.data?.message || error?.response?.data?.error || 'OTP verification failed'
+    const message =
+      error?.response?.data?.message ||
+      error?.response?.data?.error ||
+      'OTP verification failed'
     throw new Error(message)
   }
 }
@@ -66,7 +80,10 @@ export const login = async (credentials) => {
     }
     return response.data
   } catch (error) {
-    const message = error?.response?.data?.message || error?.response?.data?.error || 'Login failed'
+    const message =
+      error?.response?.data?.message ||
+      error?.response?.data?.error ||
+      'Login failed'
     throw new Error(message)
   }
 }
@@ -93,7 +110,36 @@ export const changePassword = async ({ oldPassword, newPassword }) => {
     )
     return response.data
   } catch (error) {
-    const message = error?.response?.data?.message || error?.response?.data?.error || 'Failed to change password'
+    let message =
+      error?.response?.data?.message ||
+      error?.response?.data?.error ||
+      'Failed to change password'
+
+    // If backend locked the user out, include human-readable time
+    if (error?.response?.status === 429) {
+      const rawSeconds = Number(error?.response?.data?.retryAfterSeconds)
+      if (!Number.isNaN(rawSeconds) && rawSeconds > 0) {
+        const minutes = Math.floor(rawSeconds / 60)
+        const seconds = rawSeconds % 60
+
+        let timePart = ''
+        if (minutes > 0) {
+          timePart += `${minutes} minute${minutes === 1 ? '' : 's'}`
+        }
+        if (seconds > 0) {
+          if (timePart) {
+            timePart += ' and '
+          }
+          timePart += `${seconds} second${seconds === 1 ? '' : 's'}`
+        }
+        if (!timePart) {
+          timePart = `${rawSeconds} seconds`
+        }
+
+        message = `${message} You can try again in approximately ${timePart}.`
+      }
+    }
+
     throw new Error(message)
   }
 }

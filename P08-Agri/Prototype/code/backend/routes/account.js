@@ -1,8 +1,19 @@
 const express = require('express')
 const jwt = require('jsonwebtoken')
+const bcrypt = require('bcryptjs')
 const User = require('../models/User')
+const PasswordHistory = require('../models/PasswordHistory')
+const PasswordSecurity = require('../models/PasswordSecurity')
+const { send_password_change_email } = require('../email_service')
 
 const router = express.Router()
+
+// How many wrong attempts before lockout
+const MAX_FAILED_ATTEMPTS = 5
+// Lockout duration in minutes
+const LOCKOUT_MINUTES = 15
+// How many previous passwords to block reuse of
+const PASSWORD_HISTORY_DEPTH = 5
 
 function get_auth_user(request) {
   const auth_header = request.headers.authorization || ''
@@ -21,25 +32,80 @@ function get_auth_user(request) {
   }
 }
 
+function validate_new_password(password, user) {
+  if (!password || typeof password !== 'string') {
+    return 'New password is required'
+  }
+
+  const trimmed = password.trim()
+  if (trimmed.length < 8) {
+    return 'New password must be at least 8 characters long'
+  }
+
+  if (/\s/.test(trimmed)) {
+    return 'New password cannot contain spaces'
+  }
+
+  const has_upper = /[A-Z]/.test(trimmed)
+  const has_lower = /[a-z]/.test(trimmed)
+  const has_digit = /[0-9]/.test(trimmed)
+  const has_symbol = /[^A-Za-z0-9]/.test(trimmed)
+  const categories = [has_upper, has_lower, has_digit, has_symbol].filter(Boolean).length
+
+  if (categories < 3) {
+    return 'New password must include at least three of: uppercase letters, lowercase letters, numbers, and symbols'
+  }
+
+  const very_common = ['password', '12345678', 'qwerty', 'letmein', 'agriqual']
+  if (very_common.includes(trimmed.toLowerCase())) {
+    return 'New password is too common. Choose something harder to guess'
+  }
+
+  if (
+    user &&
+    user.email &&
+    trimmed.toLowerCase().includes(String(user.email).split('@')[0].toLowerCase())
+  ) {
+    return 'New password must not contain your email username'
+  }
+
+  return null
+}
+
+async function get_or_create_security(user_id) {
+  let doc = await PasswordSecurity.findOne({ userId: user_id })
+  if (!doc) {
+    doc = new PasswordSecurity({
+      userId: user_id,
+      failedAttempts: 0,
+      lockUntil: null,
+      lastAttemptAt: null
+    })
+    await doc.save()
+  }
+  return doc
+}
+
 router.post('/change-password', async function (request, response) {
   try {
+    // 1) Unauthorized without token
     const auth_user = get_auth_user(request)
     if (!auth_user) {
       return response.status(401).json({ message: 'Unauthorized' })
     }
 
-    const old_password_raw = request.body && request.body.oldPassword ? request.body.oldPassword : ''
-    const new_password_raw = request.body && request.body.newPassword ? request.body.newPassword : ''
+    const old_password_raw =
+      request.body && request.body.oldPassword ? request.body.oldPassword : ''
+    const new_password_raw =
+      request.body && request.body.newPassword ? request.body.newPassword : ''
 
     const old_password = String(old_password_raw)
     const new_password = String(new_password_raw)
 
     if (!old_password || !new_password) {
-      return response.status(400).json({ message: 'Old password and new password are required' })
-    }
-
-    if (new_password.length < 8) {
-      return response.status(400).json({ message: 'New password must be at least 8 characters long' })
+      return response
+        .status(400)
+        .json({ message: 'Old password and new password are required' })
     }
 
     const user = await User.findById(auth_user.userId)
@@ -47,13 +113,120 @@ router.post('/change-password', async function (request, response) {
       return response.status(404).json({ message: 'User not found' })
     }
 
-    const is_match = await user.comparePassword(old_password)
-    if (!is_match) {
+    // Security state for lockouts
+    const security = await get_or_create_security(user._id)
+    const now = new Date()
+
+    // 2) Temporary lockout after repeated failures
+    if (security.lockUntil && security.lockUntil > now) {
+      const retry_after_sec = Math.ceil(
+        (security.lockUntil.getTime() - now.getTime()) / 1000
+      )
+      return response.status(429).json({
+        message: 'Too many incorrect password attempts. Please try again later.',
+        retryAfterSeconds: retry_after_sec
+      })
+    }
+
+    // 3) Basic check: new password != old password textually
+    if (old_password === new_password) {
+      return response
+        .status(400)
+        .json({ message: 'New password must be different from old password' })
+    }
+
+    // 4) Weak password rejected by policy
+    const policy_error = validate_new_password(new_password, user)
+    if (policy_error) {
+      return response.status(400).json({ message: policy_error })
+    }
+
+    // 5) Wrong old password rejected + failure counting
+    const old_matches = await user.comparePassword(old_password)
+    if (!old_matches) {
+      security.failedAttempts = (security.failedAttempts || 0) + 1
+      security.lastAttemptAt = now
+
+      if (security.failedAttempts >= MAX_FAILED_ATTEMPTS) {
+        security.lockUntil = new Date(now.getTime() + LOCKOUT_MINUTES * 60 * 1000)
+        console.warn(
+          'Password change lockout:',
+          user._id.toString(),
+          'until',
+          security.lockUntil.toISOString()
+        )
+      }
+
+      await security.save()
+
       return response.status(400).json({ message: 'Old password is incorrect' })
     }
 
+    // Old password is correct → reset failure counters
+    security.failedAttempts = 0
+    security.lockUntil = null
+    security.lastAttemptAt = now
+    await security.save()
+
+    // 6) Password reuse blocked (current + history)
+    const current_hash = user.password
+
+    const same_as_current = await bcrypt.compare(new_password, current_hash)
+    if (same_as_current) {
+      return response
+        .status(400)
+        .json({ message: 'New password must be different from your current password' })
+    }
+
+    const recent_history = await PasswordHistory.find({ userId: user._id })
+      .sort({ createdAt: -1 })
+      .limit(PASSWORD_HISTORY_DEPTH)
+
+    for (const entry of recent_history) {
+      const reused = await bcrypt.compare(new_password, entry.passwordHash)
+      if (reused) {
+        return response
+          .status(400)
+          .json({ message: 'New password cannot reuse one of your recent passwords' })
+      }
+    }
+
+    // Store previous password hash into history BEFORE changing
+    const history_entry = new PasswordHistory({
+      userId: user._id,
+      passwordHash: current_hash,
+      createdAt: now
+    })
+    await history_entry.save()
+
+    // 7) Actually change password
     user.password = new_password
     await user.save()
+
+    // Logging
+    const client_ip =
+      request.headers['x-forwarded-for'] ||
+      request.connection?.remoteAddress ||
+      request.socket?.remoteAddress ||
+      request.ip
+
+    console.log(
+      'Password changed successfully for user',
+      user._id.toString(),
+      '(' + user.email + ')',
+      'from IP',
+      client_ip || 'unknown',
+      'at',
+      now.toISOString()
+    )
+
+    // 8) Successful password change sends email
+    try {
+      await send_password_change_email(user.email)
+    } catch (email_error) {
+      const emsg = email_error && email_error.message ? email_error.message : email_error
+      console.error('Failed to send password change email:', emsg)
+    }
 
     return response.json({ message: 'Password changed successfully' })
   } catch (error) {
