@@ -12,3 +12,4 @@ frontend/build/
 backend/ml/artifacts/*.pt
 backend/ml/artifacts/*.pth
 backend/ml/artifacts/*.onnx
+.DS_Store
