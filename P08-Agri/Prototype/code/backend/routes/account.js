@@ -8,11 +8,8 @@ const { send_password_change_email } = require('../email_service')
 
 const router = express.Router()
 
-// How many wrong attempts before lockout
 const MAX_FAILED_ATTEMPTS = 5
-// Lockout duration in minutes
 const LOCKOUT_MINUTES = 15
-// How many previous passwords to block reuse of
 const PASSWORD_HISTORY_DEPTH = 5
 
 function get_auth_user(request) {
@@ -20,13 +17,29 @@ function get_auth_user(request) {
   if (!auth_header.startsWith('Bearer ')) {
     return null
   }
-  const token = auth_header.slice(7)
+
+  const token = auth_header.slice(7).trim()
   if (!token) {
     return null
   }
+
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET)
-    return payload
+
+    const user_id = payload.userId || payload.sub || null
+    const email = payload.email || null
+    const role = payload.role || null
+
+    if (!user_id || !email) {
+      console.warn('[Account][auth-payload-unusable]', payload)
+      return null
+    }
+
+    return {
+      userId: user_id,
+      email,
+      role
+    }
   } catch (error) {
     return null
   }
@@ -123,14 +136,13 @@ async function check_password_history(user, new_password) {
   for (const entry of recent_history) {
     const reused = await bcrypt.compare(new_password, entry.passwordHash)
     if (reused) {
-      return true // Password was reused
+      return true
     }
   }
-  return false // Password is new
+  return false
 }
 
 async function update_password(user, new_password, current_hash, now) {
-  // Store previous password hash into history BEFORE changing
   const history_entry = new PasswordHistory({
     userId: user._id,
     passwordHash: current_hash,
@@ -166,7 +178,6 @@ router.post('/change-password', async function (request, response) {
       return response.status(404).json({ message: 'User not found' })
     }
 
-    // Security state for lockouts
     const security = await get_or_create_security(user._id)
     const now = new Date()
 
@@ -195,7 +206,6 @@ router.post('/change-password', async function (request, response) {
       return response.status(400).json({ message: 'Old password is incorrect' })
     }
 
-    // Old password is correct → reset failure counters
     security.failedAttempts = 0
     security.lockUntil = null
     security.lastAttemptAt = now
@@ -205,21 +215,20 @@ router.post('/change-password', async function (request, response) {
 
     const same_as_current = await bcrypt.compare(new_password, current_hash)
     if (same_as_current) {
-      return response
-        .status(400)
-        .json({ message: 'New password must be different from your current password' })
+      return response.status(400).json({
+        message: 'New password must be different from your current password'
+      })
     }
 
     const password_reused = await check_password_history(user, new_password)
     if (password_reused) {
-      return response
-        .status(400)
-        .json({ message: 'New password cannot reuse one of your recent passwords' })
+      return response.status(400).json({
+        message: 'New password cannot reuse one of your recent passwords'
+      })
     }
 
     await update_password(user, new_password, current_hash, now)
 
-    // Logging
     const client_ip =
       request.headers['x-forwarded-for'] ||
       request.connection?.remoteAddress ||
