@@ -1,20 +1,21 @@
 const express = require('express')
 const jwt = require('jsonwebtoken')
 const Complaint = require('../models/Complaint')
+const User = require('../models/User')
 const { send_help_email } = require('../email_service')
 
 const router = express.Router()
 
-// ===== Rate limit config (per user) =====
+// ==== Rate-limit configuration (per user+IP) ====
 const HELP_WINDOW_SECONDS =
   Number(process.env.HELP_TICKET_WINDOW_SECONDS) || 3600 // 1 hour
 const HELP_MAX_PER_WINDOW =
   Number(process.env.HELP_TICKET_MAX_PER_WINDOW) || 5
 
-// In-memory store: key = userId string, value = { count, windowStartMs }
+// key = `${user_id}|${ip}`, value = { count, windowStartMs }
 const help_rate_store = new Map()
 
-// ===== Read JWT from Authorization header =====
+// ---- JWT helper ----
 function get_auth_user(request) {
   const auth_header = request.headers.authorization || ''
   if (!auth_header.startsWith('Bearer ')) {
@@ -35,46 +36,7 @@ function get_auth_user(request) {
   }
 }
 
-// ===== Extract { user_id, email } from many possible payload shapes =====
-function extract_identity(auth_user) {
-  if (!auth_user || typeof auth_user !== 'object') {
-    return null
-  }
-
-  // Some apps put stuff directly on payload, some under payload.user, etc.
-  const candidates = [auth_user, auth_user.user, auth_user.data]
-
-  let email = ''
-  let user_id = ''
-
-  for (const cand of candidates) {
-    if (!cand || typeof cand !== 'object') {
-      continue
-    }
-
-    if (!email && cand.email) {
-      email = String(cand.email).trim().toLowerCase()
-    }
-
-    if (!user_id) {
-      if (cand.userId) {
-        user_id = String(cand.userId)
-      } else if (cand._id) {
-        user_id = String(cand._id)
-      } else if (cand.id) {
-        user_id = String(cand.id)
-      }
-    }
-  }
-
-  if (!email || !user_id) {
-    return null
-  }
-
-  return { user_id, email }
-}
-
-// ===== Tiny text "sanitizer" (trim, collapse spaces, length cap) =====
+// ---- tiny text cleaner: trim, collapse spaces, cap length ----
 function clean_text(value, max_len) {
   const str = typeof value === 'string' ? value : String(value || '')
   let trimmed = str.trim()
@@ -85,11 +47,11 @@ function clean_text(value, max_len) {
   return trimmed
 }
 
-// ===== Per-user rate limit =====
-function check_help_rate_limit(user_id) {
+// ---- rate limit per user+IP ----
+function check_help_rate_limit(user_id, ip) {
   const now = Date.now()
   const window_ms = HELP_WINDOW_SECONDS * 1000
-  const key = String(user_id)
+  const key = `${String(user_id)}|${String(ip || 'unknown')}`
 
   let entry = help_rate_store.get(key)
   if (!entry) {
@@ -108,12 +70,11 @@ function check_help_rate_limit(user_id) {
   const remaining_ms = window_ms - (now - entry.windowStartMs)
   const retry_after_seconds = Math.max(1, Math.ceil(remaining_ms / 1000))
 
-  console.log('[Help][rate-limit]', {
-    user_id: key,
+  console.log('[Help][rate-limit-check]', {
+    key,
     count: entry.count,
     window_start_iso: new Date(entry.windowStartMs).toISOString(),
-    now_iso: new Date(now).toISOString(),
-    window_seconds: HELP_WINDOW_SECONDS
+    now_iso: new Date(now).toISOString()
   })
 
   if (entry.count > HELP_MAX_PER_WINDOW) {
@@ -126,26 +87,46 @@ function check_help_rate_limit(user_id) {
   return { allowed: true }
 }
 
-// ===== POST /api/help/complaints =====
+// ==== POST /api/help/complaints ====
 router.post('/complaints', async function (request, response) {
   try {
-    // 1) Require JWT
+    // 1) Require auth
     const auth_user = get_auth_user(request)
     if (!auth_user) {
       return response.status(401).json({ message: 'Unauthorized' })
     }
 
-    // 2) Extract identity (email + userId) from payload
-    const identity = extract_identity(auth_user)
-    if (!identity) {
-      console.error('[Help][auth-payload-unusable]', auth_user)
+    // 2) Derive user_id from payload (sub / userId / id / _id)
+    const user_id =
+      auth_user.userId ||
+      auth_user.sub ||
+      auth_user.id ||
+      auth_user._id ||
+      null
+
+    if (!user_id) {
+      console.error('[Help][auth-payload-missing-id]', auth_user)
       return response.status(401).json({ message: 'Unauthorized' })
     }
 
-    const { user_id, email: user_email } = identity
+    // 3) Look up the user in MongoDB to get email
+    let user_email = ''
+    try {
+      const user_doc = await User.findById(user_id).select('email').lean()
+      if (user_doc && user_doc.email) {
+        user_email = String(user_doc.email).trim().toLowerCase()
+      }
+    } catch (db_error) {
+      console.error('[Help][user-lookup-error]', db_error.message || db_error)
+    }
 
-    // 3) Rate-limit by user_id
-    const rate_result = check_help_rate_limit(user_id)
+    if (!user_email) {
+      console.error('[Help][user-email-not-found]', { user_id })
+      return response.status(401).json({ message: 'Unauthorized' })
+    }
+
+    // 4) Rate-limit for this user+IP
+    const rate_result = check_help_rate_limit(user_id, request.ip)
     if (!rate_result.allowed) {
       return response.status(429).json({
         message:
@@ -154,11 +135,11 @@ router.post('/complaints', async function (request, response) {
       })
     }
 
-    // 4) Validate + clean subject/message
+    // 5) Validate + sanitize subject/message
     const subject_raw =
-      (request.body && request.body.subject) ? request.body.subject : ''
+      request.body && request.body.subject ? request.body.subject : ''
     const message_raw =
-      (request.body && request.body.message) ? request.body.message : ''
+      request.body && request.body.message ? request.body.message : ''
 
     const subject = clean_text(subject_raw, 200)
     const message = clean_text(message_raw, 4000)
@@ -177,7 +158,7 @@ router.post('/complaints', async function (request, response) {
       return response.status(400).json({ message: 'Message is required' })
     }
 
-    // 5) Store complaint (userEmail + userId are now guaranteed)
+    // 6) Save complaint (userEmail + userId are now guaranteed)
     const complaint = new Complaint({
       userEmail: user_email,
       userId: user_id,
@@ -188,7 +169,7 @@ router.post('/complaints', async function (request, response) {
 
     await complaint.save()
 
-    // 6) Fire support email (best-effort)
+    // 7) Fire support email (best-effort; errors here do NOT break the request)
     try {
       await send_help_email({
         subject,
@@ -197,10 +178,9 @@ router.post('/complaints', async function (request, response) {
       })
     } catch (email_error) {
       console.error('[Help] Failed to send help email:', email_error)
-      // Ticket is still stored in DB – we don't fail the request.
     }
 
-    // 7) Success response (your frontend already handles this)
+    // 8) Success response – front-end already shows green tick based on this
     return response.status(201).json({
       message: 'Complaint submitted successfully',
       complaint: {
