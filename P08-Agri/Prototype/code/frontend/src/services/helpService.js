@@ -22,20 +22,15 @@ export async function send_complaint(payload) {
     throw new Error('You must be logged in to send a help request')
   }
 
-  const subject_raw = payload && payload.subject ? String(payload.subject) : ''
-  const message_raw = payload && payload.message ? String(payload.message) : ''
-
-  const subject = subject_raw.trim()
-  const message = message_raw.trim()
+  const subject = payload && payload.subject ? String(payload.subject).trim() : ''
+  const message = payload && payload.message ? String(payload.message).trim() : ''
 
   if (!subject && !message) {
     throw new Error('Subject and message are required')
   }
-
   if (!subject) {
     throw new Error('Subject is required')
   }
-
   if (!message) {
     throw new Error('Message is required')
   }
@@ -44,13 +39,8 @@ export async function send_complaint(payload) {
     const response = await help_api.post(
       '/complaints',
       { subject, message },
-      {
-        headers: {
-          Authorization: 'Bearer ' + token
-        }
-      }
+      { headers: { Authorization: 'Bearer ' + token } }
     )
-
     return response.data
   } catch (error) {
     let message_text =
@@ -61,12 +51,14 @@ export async function send_complaint(payload) {
       'Failed to send help request'
 
     if (error && error.response && error.response.status === 429) {
-      const retry_raw =
-        error.response.data && Number(error.response.data.retryAfterSeconds)
+      const raw_seconds =
+        error.response.data && typeof error.response.data.retryAfterSeconds !== 'undefined'
+          ? Number(error.response.data.retryAfterSeconds)
+          : NaN
 
-      if (!Number.isNaN(retry_raw) && retry_raw > 0) {
-        const minutes = Math.floor(retry_raw / 60)
-        const seconds = retry_raw % 60
+      if (!Number.isNaN(raw_seconds) && raw_seconds > 0) {
+        const minutes = Math.floor(raw_seconds / 60)
+        const seconds = raw_seconds % 60
 
         let time_part = ''
         if (minutes > 0) {
@@ -79,19 +71,13 @@ export async function send_complaint(payload) {
           time_part += `${seconds} second${seconds === 1 ? '' : 's'}`
         }
         if (!time_part) {
-          time_part = `${retry_raw} seconds`
+          time_part = `${raw_seconds} seconds`
         }
 
-        message_text = `${message_text} You can send another support request in approximately ${time_part}.`
+        message_text = `${message_text} You can try again in approximately ${time_part}.`
       }
     }
 
     throw new Error(message_text)
   }
 }
-
-const helpService = {
-  send_complaint
-}
-
-export default helpService
