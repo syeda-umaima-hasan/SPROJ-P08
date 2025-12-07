@@ -17,14 +17,29 @@ function get_auth_user(request) {
   if (!auth_header.startsWith('Bearer ')) {
     return null
   }
+
   const token = auth_header.slice(7)
   if (!token) {
     return null
   }
+
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET)
-    return payload
+
+    const user_id = payload.userId || payload.sub || payload.id || null
+    const email = payload.email || payload.userEmail || null
+
+    if (!user_id && !email) {
+      console.warn('[Account][auth-payload-unusable]', payload)
+      return null
+    }
+
+    return {
+      userId: user_id || null,
+      email: email || null
+    }
   } catch (error) {
+    console.warn('[Account][auth-verify-failed]', error.message || error)
     return null
   }
 }
@@ -68,31 +83,21 @@ function validate_new_password(password, user) {
   return null
 }
 
-// -------- helpers with defensive error handling ----------
-
 async function get_or_create_security(user_id) {
-  try {
-    let doc = await PasswordSecurity.findOne({ userId: user_id })
-    if (!doc) {
-      doc = new PasswordSecurity({
-        userId: user_id,
-        failedAttempts: 0,
-        lockUntil: null,
-        lastAttemptAt: null
-      })
-      await doc.save()
-    }
-    return doc
-  } catch (error) {
-    console.error('[Account][security] Failed to load/create PasswordSecurity:', error.message || error)
-    return null
+  let doc = await PasswordSecurity.findOne({ userId: user_id })
+  if (!doc) {
+    doc = new PasswordSecurity({
+      userId: user_id,
+      failedAttempts: 0,
+      lockUntil: null,
+      lastAttemptAt: null
+    })
+    await doc.save()
   }
+  return doc
 }
 
-function check_lockout(security, now) {
-  if (!security) {
-    return { locked: false }
-  }
+async function check_lockout(security, now) {
   if (security.lockUntil && security.lockUntil > now) {
     const retry_after_sec = Math.ceil(
       (security.lockUntil.getTime() - now.getTime()) / 1000
@@ -106,68 +111,47 @@ function check_lockout(security, now) {
 }
 
 async function handle_failed_attempt(security, now, user) {
-  if (!security) {
-    return
-  }
-  try {
-    security.failedAttempts = (security.failedAttempts || 0) + 1
-    security.lastAttemptAt = now
+  security.failedAttempts = (security.failedAttempts || 0) + 1
+  security.lastAttemptAt = now
 
-    if (security.failedAttempts >= MAX_FAILED_ATTEMPTS) {
-      security.lockUntil = new Date(now.getTime() + LOCKOUT_MINUTES * 60 * 1000)
-      console.warn(
-        'Password change lockout:',
-        user._id.toString(),
-        'until',
-        security.lockUntil.toISOString()
-      )
-    }
-
-    await security.save()
-  } catch (error) {
-    console.error('[Account][security] Failed to update lockout state:', error.message || error)
+  if (security.failedAttempts >= MAX_FAILED_ATTEMPTS) {
+    security.lockUntil = new Date(now.getTime() + LOCKOUT_MINUTES * 60 * 1000)
+    console.warn(
+      'Password change lockout:',
+      user._id.toString(),
+      'until',
+      security.lockUntil.toISOString()
+    )
   }
+
+  await security.save()
 }
 
 async function check_password_history(user, new_password) {
-  try {
-    const recent_history = await PasswordHistory.find({ userId: user._id })
-      .sort({ createdAt: -1 })
-      .limit(PASSWORD_HISTORY_DEPTH)
+  const recent_history = await PasswordHistory.find({ userId: user._id })
+    .sort({ createdAt: -1 })
+    .limit(PASSWORD_HISTORY_DEPTH)
 
-    for (const entry of recent_history) {
-      const reused = await bcrypt.compare(new_password, entry.passwordHash)
-      if (reused) {
-        return true
-      }
+  for (const entry of recent_history) {
+    const reused = await bcrypt.compare(new_password, entry.passwordHash)
+    if (reused) {
+      return true
     }
-    return false
-  } catch (error) {
-    console.error('[Account][history] Failed to check password history:', error.message || error)
-    // If history check fails, do NOT block the user – just treat as "not reused"
-    return false
   }
+  return false
 }
 
 async function update_password(user, new_password, current_hash, now) {
-  try {
-    const history_entry = new PasswordHistory({
-      userId: user._id,
-      passwordHash: current_hash,
-      createdAt: now
-    })
-    await history_entry.save()
-  } catch (error) {
-    console.error('[Account][history] Failed to save password history:', error.message || error)
-    // best-effort: continue anyway
-  }
+  const history_entry = new PasswordHistory({
+    userId: user._id,
+    passwordHash: current_hash,
+    createdAt: now
+  })
+  await history_entry.save()
 
-  // This will trigger the User pre-save hook to re-hash
   user.password = new_password
   await user.save()
 }
-
-// --------------- ROUTE ----------------
 
 router.post('/change-password', async function (request, response) {
   try {
@@ -175,6 +159,8 @@ router.post('/change-password', async function (request, response) {
     if (!auth_user) {
       return response.status(401).json({ message: 'Unauthorized' })
     }
+
+    console.log('[Account][change-password] auth_user:', auth_user)
 
     const old_password_raw = request.body?.oldPassword || ''
     const new_password_raw = request.body?.newPassword || ''
@@ -188,15 +174,29 @@ router.post('/change-password', async function (request, response) {
         .json({ message: 'Old password and new password are required' })
     }
 
-    const user = await User.findById(auth_user.userId)
+    let user = null
+
+    if (auth_user.userId) {
+      try {
+        user = await User.findById(auth_user.userId)
+      } catch (e) {
+        console.warn('[Account][findById-error]', e.message || e)
+      }
+    }
+
+    if (!user && auth_user.email) {
+      user = await User.findOne({ email: auth_user.email })
+    }
+
     if (!user) {
+      console.warn('[Account][user-not-found]', auth_user)
       return response.status(404).json({ message: 'User not found' })
     }
 
+    const security = await get_or_create_security(user._id)
     const now = new Date()
 
-    const security = await get_or_create_security(user._id)
-    const lockout_check = check_lockout(security, now)
+    const lockout_check = await check_lockout(security, now)
     if (lockout_check.locked) {
       return response.status(429).json({
         message: 'Too many incorrect password attempts. Please try again later.',
@@ -221,16 +221,10 @@ router.post('/change-password', async function (request, response) {
       return response.status(400).json({ message: 'Old password is incorrect' })
     }
 
-    if (security) {
-      try {
-        security.failedAttempts = 0
-        security.lockUntil = null
-        security.lastAttemptAt = now
-        await security.save()
-      } catch (error) {
-        console.error('[Account][security] Failed to reset lockout counters:', error.message || error)
-      }
-    }
+    security.failedAttempts = 0
+    security.lockUntil = null
+    security.lastAttemptAt = now
+    await security.save()
 
     const current_hash = user.password
 
@@ -275,10 +269,8 @@ router.post('/change-password', async function (request, response) {
 
     return response.json({ message: 'Password changed successfully' })
   } catch (error) {
-    console.error('[Account][change-password] Error:', error.message || error)
-    if (error.stack) {
-      console.error('[Account][change-password] Stack:', error.stack)
-    }
+    const msg = error?.message || error
+    console.error('Change password error:', msg)
     return response.status(500).json({ message: 'Server error' })
   }
 })

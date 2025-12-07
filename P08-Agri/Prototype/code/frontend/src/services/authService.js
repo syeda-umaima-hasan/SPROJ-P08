@@ -13,27 +13,25 @@ const API_BASE =
   fromEnv ||
   (isLocalhost ? 'http://localhost:5000' : (isVercel ? '' : 'https://sproj-p08-2.onrender.com'))
 
-const AUTH_URL = `${API_BASE}/api/auth`
-const ACCOUNT_URL = `${API_BASE}/api/account`
+const API_URL = `${API_BASE}/api/auth`
 
 const api = axios.create({
-  baseURL: AUTH_URL,
+  baseURL: API_URL,
   headers: { 'Content-Type': 'application/json' }
 })
 
 export const register = async (userData) => {
   try {
     const response = await api.post('/register', userData)
-    if (response.data && response.data.token) {
+    if (response.data?.token) {
       localStorage.setItem('token', response.data.token)
       localStorage.setItem('user', JSON.stringify(response.data.user))
     }
     return response.data
   } catch (error) {
     const message =
-      (error &&
-        error.response &&
-        (error.response.data.message || error.response.data.error)) ||
+      error?.response?.data?.message ||
+      error?.response?.data?.error ||
       'Registration failed'
     throw new Error(message)
   }
@@ -42,20 +40,14 @@ export const register = async (userData) => {
 export const registerWithOtp = async (userData) => {
   try {
     const response = await api.post('/register-otp', userData)
-    if (
-      response.data &&
-      response.data.debug_otp &&
-      typeof process !== 'undefined' &&
-      process.env.NODE_ENV !== 'production'
-    ) {
+    if (response.data?.debug_otp && process.env.NODE_ENV !== 'production') {
       console.log('[Auth] Debug OTP (dev only):', response.data.debug_otp)
     }
     return response.data
   } catch (error) {
     const message =
-      (error &&
-        error.response &&
-        (error.response.data.message || error.response.data.error)) ||
+      error?.response?.data?.message ||
+      error?.response?.data?.error ||
       'Registration failed'
     throw new Error(message)
   }
@@ -64,16 +56,15 @@ export const registerWithOtp = async (userData) => {
 export const verifyOtp = async ({ email, otp }) => {
   try {
     const response = await api.post('/verify-otp', { email, otp })
-    if (response.data && response.data.token) {
+    if (response.data?.token) {
       localStorage.setItem('token', response.data.token)
       localStorage.setItem('user', JSON.stringify(response.data.user))
     }
     return response.data
   } catch (error) {
     const message =
-      (error &&
-        error.response &&
-        (error.response.data.message || error.response.data.error)) ||
+      error?.response?.data?.message ||
+      error?.response?.data?.error ||
       'OTP verification failed'
     throw new Error(message)
   }
@@ -82,20 +73,19 @@ export const verifyOtp = async ({ email, otp }) => {
 export const login = async (credentials) => {
   try {
     const response = await api.post('/login', credentials)
-    if (response.data && response.data.token) {
+    if (response.data?.token) {
       localStorage.setItem('token', response.data.token)
       localStorage.setItem('user', JSON.stringify(response.data.user))
     }
     return response.data
   } catch (error) {
     let message =
-      (error &&
-        error.response &&
-        (error.response.data.message || error.response.data.error)) ||
+      error?.response?.data?.message ||
+      error?.response?.data?.error ||
       'Login failed'
 
-    if (error && error.response && error.response.status === 429) {
-      const rawSeconds = Number(error.response.data.retryAfterSeconds)
+    if (error?.response?.status === 429) {
+      const rawSeconds = Number(error?.response?.data?.retryAfterSeconds)
       if (!Number.isNaN(rawSeconds) && rawSeconds > 0) {
         const minutes = Math.floor(rawSeconds / 60)
         const seconds = rawSeconds % 60
@@ -122,9 +112,7 @@ export const login = async (credentials) => {
   }
 }
 
-export const getToken = () => {
-  return localStorage.getItem('token')
-}
+export const getToken = () => localStorage.getItem('token')
 
 export const changePassword = async ({ oldPassword, newPassword }) => {
   const token = getToken()
@@ -134,7 +122,7 @@ export const changePassword = async ({ oldPassword, newPassword }) => {
 
   try {
     const response = await axios.post(
-      `${ACCOUNT_URL}/change-password`,
+      `${API_BASE}/api/account/change-password`,
       { oldPassword, newPassword },
       {
         headers: {
@@ -143,16 +131,16 @@ export const changePassword = async ({ oldPassword, newPassword }) => {
         }
       }
     )
+
     return response.data
   } catch (error) {
     let message =
-      (error &&
-        error.response &&
-        (error.response.data.message || error.response.data.error)) ||
+      error?.response?.data?.message ||
+      error?.response?.data?.error ||
       'Failed to change password'
 
-    if (error && error.response && error.response.status === 429) {
-      const rawSeconds = Number(error.response.data.retryAfterSeconds)
+    if (error?.response?.status === 429) {
+      const rawSeconds = Number(error?.response?.data?.retryAfterSeconds)
       if (!Number.isNaN(rawSeconds) && rawSeconds > 0) {
         const minutes = Math.floor(rawSeconds / 60)
         const seconds = rawSeconds % 60
@@ -186,15 +174,10 @@ export const logout = () => {
 
 export const getCurrentUser = () => {
   const userStr = localStorage.getItem('user')
-  if (!userStr) {
-    return null
-  }
-  return JSON.parse(userStr)
+  return userStr ? JSON.parse(userStr) : null
 }
 
-export const isAuthenticated = () => {
-  return !!getToken()
-}
+export const isAuthenticated = () => !!getToken()
 
 const authService = {
   register,
