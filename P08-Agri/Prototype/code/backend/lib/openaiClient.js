@@ -11,11 +11,7 @@ console.log('[OpenAI] API key present?', api_key ? 'YES' : 'NO')
 
 let client = null
 
-if (!api_key) {
-  console.warn(
-    '[OpenAI] OPENAI_API_KEY is missing. LLM weather advice will be disabled and llm_advice will be null.'
-  )
-} else {
+if (api_key) {
   const options = { apiKey: api_key }
 
   if (base_url) {
@@ -32,6 +28,10 @@ if (!api_key) {
     )
     client = null
   }
+} else {
+  console.warn(
+    '[OpenAI] OPENAI_API_KEY is missing. LLM weather advice will be disabled and llm_advice will be null.'
+  )
 }
 
 async function get_llm_weather_advice(context) {
