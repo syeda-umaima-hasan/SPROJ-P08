@@ -1,35 +1,117 @@
-// backend/lib/openaiClient.js
+const OpenAI = require('openai')
 
-let cached_client = null;
-let init_error = null;
+const api_key =
+  process.env.OPENAI_API_KEY ||
+  process.env.OPENAI_KEY ||
+  process.env.OPENAI_API_TOKEN
 
-async function getOpenAIClient() {
-  if (cached_client !== null) {
-    return cached_client;
+console.log('[OpenAI] api key present?', Boolean(api_key))
+
+let openai_client = null
+
+if (api_key) {
+  try {
+    openai_client = new OpenAI({ apiKey: api_key })
+    console.log('[OpenAI] client created successfully')
+  } catch (error) {
+    console.error('[OpenAI] failed to create client:', error.message || error)
   }
+} else {
+  console.warn('[OpenAI] no API key found; LLM weather advice disabled')
+}
 
-  if (init_error !== null) {
-    throw init_error;
-  }
-
-  const api_key = process.env.OPENAI_API_KEY;
-
-  if (!api_key) {
-    init_error = new Error('OPENAI_API_KEY is not set in environment');
-    throw init_error;
+async function get_weather_llm_advice(payload) {
+  if (!openai_client) {
+    console.warn('[OpenAI] get_weather_llm_advice called but client is null (no api key)')
+    return null
   }
 
   try {
-    const openai_module = await import('openai');
-    const OpenAI = openai_module.default;
-    cached_client = new OpenAI({ apiKey: api_key });
-    return cached_client;
+    const city = payload.city || 'the user location'
+    const current = payload.current || {}
+    const today = payload.today || {}
+    const advice = Array.isArray(payload.advice) ? payload.advice : []
+
+    const system_message =
+      'You are an expert Pakistani agronomy assistant. ' +
+      'You receive structured weather data and must give practical, localized crop advice for small and medium farmers. ' +
+      'Write in clear, simple English bullets, focusing on what to do and what to avoid today and in the next 24 hours.'
+
+    const user_message =
+      'Location: ' +
+      city +
+      '\n' +
+      'Current conditions:\n' +
+      '- Temperature: ' +
+      current.temperature_c +
+      '°C\n' +
+      '- Wind speed: ' +
+      current.wind_speed_kmh +
+      ' km/h\n' +
+      '\n' +
+      'Today forecast:\n' +
+      '- Max temp: ' +
+      today.tmax_c +
+      '°C\n' +
+      '- Min temp: ' +
+      today.tmin_c +
+      '°C\n' +
+      '- Precipitation: ' +
+      today.precipitation_mm +
+      ' mm\n' +
+      '- Max UV index: ' +
+      today.uv_index_max +
+      '\n' +
+      '\n' +
+      'Baseline rule-based advice from the app:\n' +
+      advice.map((x, i) => String(i + 1) + '. ' + x).join('\n') +
+      '\n' +
+      '\n' +
+      'Using all this, give a detailed but concise advisory for crop care today and the next 24 hours. ' +
+      'Use short paragraphs and bullet points. Start with a one line summary, then give 3–7 specific actions to take, ' +
+      'and 3–5 things to avoid. Focus on irrigation, spraying, fertilizer, and disease risk.'
+
+    console.log('[OpenAI] calling model gpt-4o-mini for weather advice')
+
+    const response = await openai_client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: system_message },
+        { role: 'user', content: user_message }
+      ],
+      max_tokens: 400,
+      temperature: 0.5
+    })
+
+    const content =
+      response &&
+      response.choices &&
+      response.choices[0] &&
+      response.choices[0].message &&
+      response.choices[0].message.content
+
+    if (!content) {
+      console.warn('[OpenAI] empty content returned from weather advice call')
+      return null
+    }
+
+    console.log('[OpenAI] weather advice generated successfully')
+    return String(content).trim()
   } catch (error) {
-    init_error = error;
-    throw error;
+    const status = error && error.status
+    const detail =
+      (error &&
+        error.response &&
+        error.response.data &&
+        (error.response.data.message || error.response.data.error)) ||
+      error.message ||
+      error
+
+    console.error('[OpenAI] error while generating weather advice. status=', status, 'detail=', detail)
+    return null
   }
 }
 
 module.exports = {
-  getOpenAIClient
-};
+  get_weather_llm_advice
+}
