@@ -90,4 +90,122 @@ export const login = async (credentials) => {
   } catch (error) {
     let message =
       (error &&
-        error.
+        error.response &&
+        (error.response.data.message || error.response.data.error)) ||
+      'Login failed'
+
+    if (error && error.response && error.response.status === 429) {
+      const rawSeconds = Number(error.response.data.retryAfterSeconds)
+      if (!Number.isNaN(rawSeconds) && rawSeconds > 0) {
+        const minutes = Math.floor(rawSeconds / 60)
+        const seconds = rawSeconds % 60
+
+        let timePart = ''
+        if (minutes > 0) {
+          timePart += `${minutes} minute${minutes === 1 ? '' : 's'}`
+        }
+        if (seconds > 0) {
+          if (timePart) {
+            timePart += ' and '
+          }
+          timePart += `${seconds} second${seconds === 1 ? '' : 's'}`
+        }
+        if (!timePart) {
+          timePart = `${rawSeconds} seconds`
+        }
+
+        message = `${message} You can try again in approximately ${timePart}.`
+      }
+    }
+
+    throw new Error(message)
+  }
+}
+
+export const getToken = () => {
+  return localStorage.getItem('token')
+}
+
+export const changePassword = async ({ oldPassword, newPassword }) => {
+  const token = getToken()
+  if (!token) {
+    throw new Error('You must be logged in to change your password')
+  }
+
+  try {
+    const response = await axios.post(
+      `${ACCOUNT_URL}/change-password`,
+      { oldPassword, newPassword },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer ' + token
+        }
+      }
+    )
+    return response.data
+  } catch (error) {
+    let message =
+      (error &&
+        error.response &&
+        (error.response.data.message || error.response.data.error)) ||
+      'Failed to change password'
+
+    if (error && error.response && error.response.status === 429) {
+      const rawSeconds = Number(error.response.data.retryAfterSeconds)
+      if (!Number.isNaN(rawSeconds) && rawSeconds > 0) {
+        const minutes = Math.floor(rawSeconds / 60)
+        const seconds = rawSeconds % 60
+
+        let timePart = ''
+        if (minutes > 0) {
+          timePart += `${minutes} minute${minutes === 1 ? '' : 's'}`
+        }
+        if (seconds > 0) {
+          if (timePart) {
+            timePart += ' and '
+          }
+          timePart += `${seconds} second${seconds === 1 ? '' : 's'}`
+        }
+        if (!timePart) {
+          timePart = `${rawSeconds} seconds`
+        }
+
+        message = `${message} You can try again in approximately ${timePart}.`
+      }
+    }
+
+    throw new Error(message)
+  }
+}
+
+export const logout = () => {
+  localStorage.removeItem('token')
+  localStorage.removeItem('user')
+}
+
+export const getCurrentUser = () => {
+  const userStr = localStorage.getItem('user')
+  if (!userStr) {
+    return null
+  }
+  return JSON.parse(userStr)
+}
+
+export const isAuthenticated = () => {
+  return !!getToken()
+}
+
+const authService = {
+  register,
+  registerWithOtp,
+  verifyOtp,
+  login,
+  changePassword,
+  logout,
+  getCurrentUser,
+  getToken,
+  isAuthenticated
+}
+
+export default authService
