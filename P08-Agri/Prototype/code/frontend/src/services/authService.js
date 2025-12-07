@@ -1,6 +1,5 @@
 import axios from 'axios'
 
-// Resolve backend base URL (works for CRA or Vite)
 const fromEnv =
   (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL) ||
   process.env.REACT_APP_API_BASE_URL
@@ -21,7 +20,6 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' }
 })
 
-// ===== Direct register (no OTP) – kept for compatibility =====
 export const register = async (userData) => {
   try {
     const response = await api.post('/register', userData)
@@ -39,11 +37,9 @@ export const register = async (userData) => {
   }
 }
 
-// ===== OTP-based register =====
 export const registerWithOtp = async (userData) => {
   try {
     const response = await api.post('/register-otp', userData)
-    // you can log debug_otp in dev if you want:
     if (response.data?.debug_otp && process.env.NODE_ENV !== 'production') {
       console.log('[Auth] Debug OTP (dev only):', response.data.debug_otp)
     }
@@ -74,7 +70,6 @@ export const verifyOtp = async ({ email, otp }) => {
   }
 }
 
-// ===== Login =====
 export const login = async (credentials) => {
   try {
     const response = await api.post('/login', credentials)
@@ -89,7 +84,6 @@ export const login = async (credentials) => {
       error?.response?.data?.error ||
       'Login failed'
 
-    // If backend indicates lockout (HTTP 429) with retryAfterSeconds, show a human-readable timer
     if (error?.response?.status === 429) {
       const rawSeconds = Number(error?.response?.data?.retryAfterSeconds)
       if (!Number.isNaN(rawSeconds) && rawSeconds > 0) {
@@ -118,7 +112,6 @@ export const login = async (credentials) => {
   }
 }
 
-// ===== Change password (when logged in) =====
 export const getToken = () => localStorage.getItem('token')
 
 export const changePassword = async ({ oldPassword, newPassword }) => {
@@ -128,12 +121,11 @@ export const changePassword = async ({ oldPassword, newPassword }) => {
   }
 
   try {
-    const response = await axios.post(
-      `${API_BASE}/api/account/change-password`,
+    const response = await api.post(
+      '/change-password',
       { oldPassword, newPassword },
       {
         headers: {
-          'Content-Type': 'application/json',
           Authorization: 'Bearer ' + token
         }
       }
@@ -145,7 +137,6 @@ export const changePassword = async ({ oldPassword, newPassword }) => {
       error?.response?.data?.error ||
       'Failed to change password'
 
-    // If backend locked the user out, include human-readable time
     if (error?.response?.status === 429) {
       const rawSeconds = Number(error?.response?.data?.retryAfterSeconds)
       if (!Number.isNaN(rawSeconds) && rawSeconds > 0) {
@@ -174,7 +165,6 @@ export const changePassword = async ({ oldPassword, newPassword }) => {
   }
 }
 
-// ===== Other helpers =====
 export const logout = () => {
   localStorage.removeItem('token')
   localStorage.removeItem('user')
