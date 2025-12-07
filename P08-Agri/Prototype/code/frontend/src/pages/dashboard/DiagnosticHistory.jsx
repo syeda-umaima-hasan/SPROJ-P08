@@ -2,6 +2,36 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { get_diagnosis_history } from '../../services/historyService'
 
+function formatDate(dateString) {
+  const date = new Date(dateString)
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  })
+}
+
+function getConfidenceColor(confidence) {
+  if (confidence >= 0.8) return 'text-green-600'
+  if (confidence >= 0.6) return 'text-yellow-600'
+  return 'text-red-600'
+}
+
+function getConfidenceBg(confidence) {
+  if (confidence >= 0.8) return 'bg-green-100'
+  if (confidence >= 0.6) return 'bg-yellow-100'
+  return 'bg-red-100'
+}
+
+function getConfidenceBarColor(confidence) {
+  if (confidence >= 0.8) return 'bg-green-600'
+  if (confidence >= 0.6) return 'bg-yellow-600'
+  return 'bg-red-600'
+}
+
 function DiagnosticHistory() {
   const navigate = useNavigate()
   const [diagnoses, set_diagnoses] = useState([])
@@ -41,30 +71,6 @@ function DiagnosticHistory() {
   function close_detail_modal() {
     set_is_detail_modal_open(false)
     set_selected_diagnosis(null)
-  }
-
-  function format_date(date_string) {
-    const date = new Date(date_string)
-    return date.toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true
-    })
-  }
-
-  function get_confidence_color(confidence) {
-    if (confidence >= 0.8) return 'text-green-600'
-    if (confidence >= 0.6) return 'text-yellow-600'
-    return 'text-red-600'
-  }
-
-  function get_confidence_bg(confidence) {
-    if (confidence >= 0.8) return 'bg-green-100'
-    if (confidence >= 0.6) return 'bg-yellow-100'
-    return 'bg-red-100'
   }
 
   return (
@@ -131,18 +137,21 @@ function DiagnosticHistory() {
             {diagnoses.map((diagnosis) => (
               <div
                 key={diagnosis._id}
+                role="button"
+                tabIndex={0}
                 className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow cursor-pointer"
                 onClick={() => handle_view_details(diagnosis)}
+                onKeyDown={(e) => e.key === 'Enter' && handle_view_details(diagnosis)}
               >
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center space-x-3 mb-2">
                       <h3 className="text-lg font-semibold text-gray-900">{diagnosis.diagnosis}</h3>
-                      <span className={`px-3 py-1 rounded-full text-sm font-medium ${get_confidence_bg(diagnosis.confidence)} ${get_confidence_color(diagnosis.confidence)}`}>
+                      <span className={`px-3 py-1 rounded-full text-sm font-medium ${getConfidenceBg(diagnosis.confidence)} ${getConfidenceColor(diagnosis.confidence)}`}>
                         {(diagnosis.confidence * 100).toFixed(1)}% confident
                       </span>
                     </div>
-                    <p className="text-sm text-gray-500">{format_date(diagnosis.created_at)}</p>
+                    <p className="text-sm text-gray-500">{formatDate(diagnosis.created_at)}</p>
                     {diagnosis.recommendations && diagnosis.recommendations.length > 0 && (
                       <div className="mt-3">
                         <p className="text-sm text-gray-700">
@@ -163,11 +172,18 @@ function DiagnosticHistory() {
 
       {/* Detail Modal */}
       {is_detail_modal_open && selected_diagnosis && (
-        <div className="fixed inset-0 z-50 overflow-y-auto" onClick={close_detail_modal}>
+        <div 
+          role="dialog" 
+          aria-modal="true"
+          className="fixed inset-0 z-50 overflow-y-auto" 
+          onClick={close_detail_modal}
+          onKeyDown={(e) => e.key === 'Escape' && close_detail_modal()}
+        >
           <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:block sm:p-0">
             <div className="fixed inset-0 transition-opacity bg-gray-500 bg-opacity-75"></div>
             <span className="hidden sm:inline-block sm:align-middle sm:h-screen">&#8203;</span>
             <div
+              role="document"
               className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-2xl sm:w-full"
               onClick={(e) => e.stopPropagation()}
             >
@@ -186,42 +202,36 @@ function DiagnosticHistory() {
 
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Diagnosis</label>
+                    <div className="block text-sm font-medium text-gray-700 mb-1">Diagnosis</div>
                     <p className="text-lg font-semibold text-gray-900">{selected_diagnosis.diagnosis}</p>
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Confidence</label>
+                    <div className="block text-sm font-medium text-gray-700 mb-1">Confidence</div>
                     <div className="flex items-center space-x-2">
                       <div className="flex-1 bg-gray-200 rounded-full h-3">
                         <div
-                          className={`h-3 rounded-full ${
-                            selected_diagnosis.confidence >= 0.8
-                              ? 'bg-green-600'
-                              : selected_diagnosis.confidence >= 0.6
-                              ? 'bg-yellow-600'
-                              : 'bg-red-600'
-                          }`}
+                          className={`h-3 rounded-full ${getConfidenceBarColor(selected_diagnosis.confidence)}`}
                           style={{ width: `${selected_diagnosis.confidence * 100}%` }}
                         ></div>
                       </div>
-                      <span className={`text-sm font-medium ${get_confidence_color(selected_diagnosis.confidence)}`}>
+                      <span className={`text-sm font-medium ${getConfidenceColor(selected_diagnosis.confidence)}`}>
                         {(selected_diagnosis.confidence * 100).toFixed(1)}%
                       </span>
                     </div>
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
-                    <p className="text-gray-900">{format_date(selected_diagnosis.created_at)}</p>
+                    <div className="block text-sm font-medium text-gray-700 mb-1">Date</div>
+                    <p className="text-gray-900">{formatDate(selected_diagnosis.created_at)}</p>
                   </div>
 
                   {selected_diagnosis.alternatives && selected_diagnosis.alternatives.length > 0 && (
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Alternative Diagnoses</label>
+                      <div className="block text-sm font-medium text-gray-700 mb-2">Alternative Diagnoses</div>
                       <div className="space-y-2">
                         {selected_diagnosis.alternatives.map((alt, index) => (
-                          <div key={index} className="flex justify-between items-center p-2 bg-gray-50 rounded">
+                          <div key={alt.label || `alt-${index}`} className="flex justify-between items-center p-2 bg-gray-50 rounded">
                             <span className="text-gray-900">{alt.label}</span>
                             <span className="text-sm text-gray-600">{(alt.confidence * 100).toFixed(1)}%</span>
                           </div>
@@ -232,10 +242,10 @@ function DiagnosticHistory() {
 
                   {selected_diagnosis.recommendations && selected_diagnosis.recommendations.length > 0 && (
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Recommendations</label>
+                      <div className="block text-sm font-medium text-gray-700 mb-2">Recommendations</div>
                       <ul className="space-y-2">
                         {selected_diagnosis.recommendations.map((rec, index) => (
-                          <li key={index} className="flex items-start">
+                          <li key={`rec-${index}-${rec.substring(0, 20)}`} className="flex items-start">
                             <svg className="w-5 h-5 text-green-600 mr-2 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                               <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                             </svg>
