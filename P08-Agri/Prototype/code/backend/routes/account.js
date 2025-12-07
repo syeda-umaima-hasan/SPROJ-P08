@@ -48,7 +48,7 @@ function validate_new_password(password, user) {
 
   const has_upper = /[A-Z]/.test(trimmed)
   const has_lower = /[a-z]/.test(trimmed)
-  const has_digit = /[0-9]/.test(trimmed)
+  const has_digit = /\d/.test(trimmed)
   const has_symbol = /[^A-Za-z0-9]/.test(trimmed)
   const categories = [has_upper, has_lower, has_digit, has_symbol].filter(Boolean).length
 
@@ -62,8 +62,7 @@ function validate_new_password(password, user) {
   }
 
   if (
-    user &&
-    user.email &&
+    user?.email &&
     trimmed.toLowerCase().includes(String(user.email).split('@')[0].toLowerCase())
   ) {
     return 'New password must not contain your email username'
@@ -86,6 +85,63 @@ async function get_or_create_security(user_id) {
   return doc
 }
 
+async function check_lockout(security, now) {
+  if (security.lockUntil && security.lockUntil > now) {
+    const retry_after_sec = Math.ceil(
+      (security.lockUntil.getTime() - now.getTime()) / 1000
+    )
+    return {
+      locked: true,
+      retryAfterSeconds: retry_after_sec
+    }
+  }
+  return { locked: false }
+}
+
+async function handle_failed_attempt(security, now, user) {
+  security.failedAttempts = (security.failedAttempts || 0) + 1
+  security.lastAttemptAt = now
+
+  if (security.failedAttempts >= MAX_FAILED_ATTEMPTS) {
+    security.lockUntil = new Date(now.getTime() + LOCKOUT_MINUTES * 60 * 1000)
+    console.warn(
+      'Password change lockout:',
+      user._id.toString(),
+      'until',
+      security.lockUntil.toISOString()
+    )
+  }
+
+  await security.save()
+}
+
+async function check_password_history(user, new_password) {
+  const recent_history = await PasswordHistory.find({ userId: user._id })
+    .sort({ createdAt: -1 })
+    .limit(PASSWORD_HISTORY_DEPTH)
+
+  for (const entry of recent_history) {
+    const reused = await bcrypt.compare(new_password, entry.passwordHash)
+    if (reused) {
+      return true // Password was reused
+    }
+  }
+  return false // Password is new
+}
+
+async function update_password(user, new_password, current_hash, now) {
+  // Store previous password hash into history BEFORE changing
+  const history_entry = new PasswordHistory({
+    userId: user._id,
+    passwordHash: current_hash,
+    createdAt: now
+  })
+  await history_entry.save()
+
+  user.password = new_password
+  await user.save()
+}
+
 router.post('/change-password', async function (request, response) {
   try {
     const auth_user = get_auth_user(request)
@@ -93,10 +149,8 @@ router.post('/change-password', async function (request, response) {
       return response.status(401).json({ message: 'Unauthorized' })
     }
 
-    const old_password_raw =
-      request.body && request.body.oldPassword ? request.body.oldPassword : ''
-    const new_password_raw =
-      request.body && request.body.newPassword ? request.body.newPassword : ''
+    const old_password_raw = request.body?.oldPassword || ''
+    const new_password_raw = request.body?.newPassword || ''
 
     const old_password = String(old_password_raw)
     const new_password = String(new_password_raw)
@@ -116,13 +170,11 @@ router.post('/change-password', async function (request, response) {
     const security = await get_or_create_security(user._id)
     const now = new Date()
 
-    if (security.lockUntil && security.lockUntil > now) {
-      const retry_after_sec = Math.ceil(
-        (security.lockUntil.getTime() - now.getTime()) / 1000
-      )
+    const lockout_check = await check_lockout(security, now)
+    if (lockout_check.locked) {
       return response.status(429).json({
         message: 'Too many incorrect password attempts. Please try again later.',
-        retryAfterSeconds: retry_after_sec
+        retryAfterSeconds: lockout_check.retryAfterSeconds
       })
     }
 
@@ -139,21 +191,7 @@ router.post('/change-password', async function (request, response) {
 
     const old_matches = await user.comparePassword(old_password)
     if (!old_matches) {
-      security.failedAttempts = (security.failedAttempts || 0) + 1
-      security.lastAttemptAt = now
-
-      if (security.failedAttempts >= MAX_FAILED_ATTEMPTS) {
-        security.lockUntil = new Date(now.getTime() + LOCKOUT_MINUTES * 60 * 1000)
-        console.warn(
-          'Password change lockout:',
-          user._id.toString(),
-          'until',
-          security.lockUntil.toISOString()
-        )
-      }
-
-      await security.save()
-
+      await handle_failed_attempt(security, now, user)
       return response.status(400).json({ message: 'Old password is incorrect' })
     }
 
@@ -172,29 +210,14 @@ router.post('/change-password', async function (request, response) {
         .json({ message: 'New password must be different from your current password' })
     }
 
-    const recent_history = await PasswordHistory.find({ userId: user._id })
-      .sort({ createdAt: -1 })
-      .limit(PASSWORD_HISTORY_DEPTH)
-
-    for (const entry of recent_history) {
-      const reused = await bcrypt.compare(new_password, entry.passwordHash)
-      if (reused) {
-        return response
-          .status(400)
-          .json({ message: 'New password cannot reuse one of your recent passwords' })
-      }
+    const password_reused = await check_password_history(user, new_password)
+    if (password_reused) {
+      return response
+        .status(400)
+        .json({ message: 'New password cannot reuse one of your recent passwords' })
     }
 
-    // Store previous password hash into history BEFORE changing
-    const history_entry = new PasswordHistory({
-      userId: user._id,
-      passwordHash: current_hash,
-      createdAt: now
-    })
-    await history_entry.save()
-
-    user.password = new_password
-    await user.save()
+    await update_password(user, new_password, current_hash, now)
 
     // Logging
     const client_ip =
@@ -216,13 +239,13 @@ router.post('/change-password', async function (request, response) {
     try {
       await send_password_change_email(user.email)
     } catch (email_error) {
-      const emsg = email_error && email_error.message ? email_error.message : email_error
+      const emsg = email_error?.message || email_error
       console.error('Failed to send password change email:', emsg)
     }
 
     return response.json({ message: 'Password changed successfully' })
   } catch (error) {
-    const msg = error && error.message ? error.message : error
+    const msg = error?.message || error
     console.error('Change password error:', msg)
     return response.status(500).json({ message: 'Server error' })
   }
