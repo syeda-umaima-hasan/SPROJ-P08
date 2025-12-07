@@ -236,7 +236,8 @@ router.post('/change-password', async function (request, response) {
       return response.status(400).json({ message: policy_error })
     }
 
-    const old_matches = await user.comparePassword(old_password)
+    // 🔴 FIX: use bcrypt.compare instead of user.comparePassword
+    const old_matches = await bcrypt.compare(old_password, user.password)
     if (!old_matches) {
       await handle_failed_attempt(security, now, user)
       return response.status(400).json({ message: 'Old password is incorrect' })
