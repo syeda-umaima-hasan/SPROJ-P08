@@ -1,6 +1,5 @@
 const express = require('express')
 const router = express.Router()
-const fetch = require('node-fetch')
 const { get_weather_llm_advice } = require('../lib/openaiClient')
 
 const WEATHER_API_URL = 'https://api.open-meteo.com/v1/forecast'
@@ -76,6 +75,7 @@ router.get('/', async function (request, response) {
 
     console.log('[Weather] fetching from open-meteo:', weather_url)
 
+    // Node 20 has global fetch
     const res = await fetch(weather_url)
     const data = await res.json()
 
