@@ -10,11 +10,8 @@ const transporter = nodemailer.createTransport({
   }
 })
 
-async function send_otp_email(recipient_email, otp) {
-  const recipient = recipient_email || ''
-  const code = otp || ''
-
-  if (!recipient || !code) {
+async function send_otp_email(recipient_email = '', otp = '') {
+  if (!recipient_email || !otp) {
     return
   }
 
@@ -26,7 +23,7 @@ async function send_otp_email(recipient_email, otp) {
   const from_email = process.env.EMAIL_FROM || process.env.SMTP_USER
 
   const text_lines = [
-    'Your AgriQual verification code is: ' + code,
+    'Your AgriQual verification code is: ' + otp,
     '',
     'This code will expire in 10 minutes.',
     '',
@@ -35,7 +32,7 @@ async function send_otp_email(recipient_email, otp) {
 
   const mail_options = {
     from: from_email,
-    to: recipient,
+    to: recipient_email,
     subject: 'Your AgriQual verification code',
     text: text_lines.join('\n')
   }
@@ -43,16 +40,11 @@ async function send_otp_email(recipient_email, otp) {
   await transporter.sendMail(mail_options)
 }
 
-async function send_help_email(payload) {
-  const subject_raw = payload && payload.subject ? payload.subject : ''
-  const message_raw = payload && payload.message ? payload.message : ''
-  const user_email_raw = payload && payload.userEmail ? payload.userEmail : ''
-  const ticket_id_raw = payload && payload.ticketId ? payload.ticketId : ''
-
-  const subject = String(subject_raw)
-  const message = String(message_raw)
-  const user_email = String(user_email_raw || '').trim()
-  const ticket_id = String(ticket_id_raw || '').trim()
+async function send_help_email(payload = {}) {
+  const subject = String(payload?.subject || '')
+  const message = String(payload?.message || '')
+  const user_email = String(payload?.userEmail || '').trim()
+  const ticket_id = String(payload?.ticketId || '').trim()
 
   const to_email = process.env.SUPPORT_TO_EMAIL || '26100370@lums.edu.pk'
 
@@ -94,9 +86,8 @@ async function send_help_email(payload) {
   await transporter.sendMail(mail_options)
 }
 
-async function send_password_change_email(recipient_email) {
-  const recipient = recipient_email || ''
-  if (!recipient) {
+async function send_password_change_email(recipient_email = '') {
+  if (!recipient_email) {
     return
   }
 
@@ -120,7 +111,7 @@ async function send_password_change_email(recipient_email) {
 
   const mail_options = {
     from: from_email,
-    to: recipient,
+    to: recipient_email,
     subject: 'Your AgriQual password was changed',
     text: lines.join('\n')
   }
