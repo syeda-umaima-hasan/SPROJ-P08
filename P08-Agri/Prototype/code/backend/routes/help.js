@@ -12,7 +12,7 @@ const HELP_WINDOW_SECONDS =
 const HELP_MAX_PER_WINDOW =
   Number(process.env.HELP_TICKET_MAX_PER_WINDOW) || 5
 
-// key = `${user_id}|${ip}`, value = { count, windowStartMs }
+// key = `${user_id}|${client_ip}`, value = { count, windowStartMs }
 const help_rate_store = new Map()
 
 // ---- JWT helper ----
@@ -36,6 +36,23 @@ function get_auth_user(request) {
   }
 }
 
+// ---- figure out a stable client IP behind proxy (Render) ----
+function get_client_ip(request) {
+  const xf = request.headers['x-forwarded-for']
+
+  if (typeof xf === 'string' && xf.length > 0) {
+    // "real-ip, proxy1, proxy2"
+    return xf.split(',')[0].trim()
+  }
+
+  if (Array.isArray(xf) && xf.length > 0) {
+    return String(xf[0]).trim()
+  }
+
+  // fallback: internal IP
+  return request.ip || request.connection?.remoteAddress || 'unknown'
+}
+
 // ---- tiny text cleaner: trim, collapse spaces, cap length ----
 function clean_text(value, max_len) {
   const str = typeof value === 'string' ? value : String(value || '')
@@ -47,11 +64,11 @@ function clean_text(value, max_len) {
   return trimmed
 }
 
-// ---- rate limit per user+IP ----
-function check_help_rate_limit(user_id, ip) {
+// ---- rate limit per user + client IP ----
+function check_help_rate_limit(user_id, client_ip) {
   const now = Date.now()
   const window_ms = HELP_WINDOW_SECONDS * 1000
-  const key = `${String(user_id)}|${String(ip || 'unknown')}`
+  const key = `${String(user_id)}|${String(client_ip || 'unknown')}`
 
   let entry = help_rate_store.get(key)
   if (!entry) {
@@ -73,6 +90,7 @@ function check_help_rate_limit(user_id, ip) {
   console.log('[Help][rate-limit-check]', {
     key,
     count: entry.count,
+    client_ip,
     window_start_iso: new Date(entry.windowStartMs).toISOString(),
     now_iso: new Date(now).toISOString()
   })
@@ -125,8 +143,9 @@ router.post('/complaints', async function (request, response) {
       return response.status(401).json({ message: 'Unauthorized' })
     }
 
-    // 4) Rate-limit for this user+IP
-    const rate_result = check_help_rate_limit(user_id, request.ip)
+    // 4) Rate-limit for this user + client IP
+    const client_ip = get_client_ip(request)
+    const rate_result = check_help_rate_limit(user_id, client_ip)
     if (!rate_result.allowed) {
       return response.status(429).json({
         message:
@@ -158,7 +177,7 @@ router.post('/complaints', async function (request, response) {
       return response.status(400).json({ message: 'Message is required' })
     }
 
-    // 6) Save complaint (userEmail + userId are now guaranteed)
+    // 6) Save complaint
     const complaint = new Complaint({
       userEmail: user_email,
       userId: user_id,
@@ -169,7 +188,7 @@ router.post('/complaints', async function (request, response) {
 
     await complaint.save()
 
-    // 7) Fire support email (best-effort; errors here do NOT break the request)
+    // 7) Fire support email (best-effort)
     try {
       await send_help_email({
         subject,
@@ -180,7 +199,7 @@ router.post('/complaints', async function (request, response) {
       console.error('[Help] Failed to send help email:', email_error)
     }
 
-    // 8) Success response – front-end already shows green tick based on this
+    // 8) Success response
     return response.status(201).json({
       message: 'Complaint submitted successfully',
       complaint: {
