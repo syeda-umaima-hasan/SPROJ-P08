@@ -1,3 +1,4 @@
+// frontend/src/services/helpService.js
 import axios from 'axios'
 import { getToken } from './authService'
 
@@ -7,7 +8,6 @@ const from_env =
 
 const is_localhost = typeof window !== 'undefined' && window.location.hostname === 'localhost'
 const is_vercel = typeof window !== 'undefined' && /\.vercel\.app$/.test(window.location.hostname)
-
 const api_base =
   from_env || (is_localhost ? 'http://localhost:5000' : (is_vercel ? '' : 'https://sproj-p08-2.onrender.com'))
 
@@ -39,10 +39,15 @@ export async function send_complaint(payload) {
     const response = await help_api.post(
       '/complaints',
       { subject, message },
-      { headers: { Authorization: 'Bearer ' + token } }
+      {
+        headers: {
+          Authorization: 'Bearer ' + token
+        }
+      }
     )
     return response.data
   } catch (error) {
+    const status = error && error.response && error.response.status
     let message_text =
       (error &&
         error.response &&
@@ -50,16 +55,15 @@ export async function send_complaint(payload) {
         (error.response.data.message || error.response.data.error)) ||
       'Failed to send help request'
 
-    if (error && error.response && error.response.status === 429) {
+    if (status === 429) {
       const raw_seconds =
-        error.response.data && typeof error.response.data.retryAfterSeconds !== 'undefined'
-          ? Number(error.response.data.retryAfterSeconds)
-          : NaN
-
+        error &&
+        error.response &&
+        error.response.data &&
+        Number(error.response.data.retryAfterSeconds)
       if (!Number.isNaN(raw_seconds) && raw_seconds > 0) {
         const minutes = Math.floor(raw_seconds / 60)
         const seconds = raw_seconds % 60
-
         let time_part = ''
         if (minutes > 0) {
           time_part += `${minutes} minute${minutes === 1 ? '' : 's'}`
@@ -73,7 +77,6 @@ export async function send_complaint(payload) {
         if (!time_part) {
           time_part = `${raw_seconds} seconds`
         }
-
         message_text = `${message_text} You can try again in approximately ${time_part}.`
       }
     }

@@ -1,3 +1,4 @@
+// backend/models/Complaint.js
 const mongoose = require('mongoose')
 
 const complaint_schema = new mongoose.Schema(
@@ -16,25 +17,17 @@ const complaint_schema = new mongoose.Schema(
     subject: {
       type: String,
       required: true,
-      trim: true,
-      maxlength: 200
+      trim: true
     },
     message: {
       type: String,
       required: true,
-      trim: true,
-      maxlength: 4000
+      trim: true
     },
     status: {
       type: String,
       enum: ['not addressed', 'addressed'],
       default: 'not addressed'
-    },
-    ip_address: {
-      type: String
-    },
-    user_agent: {
-      type: String
     }
   },
   {
