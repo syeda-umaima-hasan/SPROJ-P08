@@ -30,7 +30,7 @@ function get_auth_user(request) {
     const email = payload.email || null
     const role = payload.role || null
 
-    if (!user_id || !email) {
+    if (!user_id) {
       console.warn('[Account][auth-payload-unusable]', payload)
       return null
     }
