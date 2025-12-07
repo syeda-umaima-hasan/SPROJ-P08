@@ -1,4 +1,3 @@
-// backend/routes/help.js
 const express = require('express')
 const jwt = require('jsonwebtoken')
 const Complaint = require('../models/Complaint')
@@ -7,9 +6,9 @@ const { send_help_email } = require('../email_service')
 
 const router = express.Router()
 
-const HELP_WINDOW_MS = 5 * 60 * 1000
-const HELP_MAX_REQUESTS = 5
-const HELP_BLOCK_MS = 15 * 60 * 1000
+const HELP_WINDOW_MS = 60 * 1000        // 1 minute window (test)
+const HELP_MAX_REQUESTS = 2             // 2 requests per window (test)
+const HELP_BLOCK_MS = 2 * 60 * 1000     // 2 minutes block (test)
 
 const help_rate_state = new Map()
 
@@ -54,6 +53,12 @@ function check_rate_limit(request, user_id) {
   if (entry.blocked_until && entry.blocked_until > now) {
     const remaining_ms = entry.blocked_until - now
     const retry_after_seconds = Math.ceil(remaining_ms / 1000)
+
+    console.log('[Help][rate-limit-blocked-already]', {
+      key,
+      retry_after_seconds
+    })
+
     return {
       allowed: false,
       retry_after_seconds
@@ -67,12 +72,27 @@ function check_rate_limit(request, user_id) {
 
   entry.count += 1
 
+  console.log('[Help][rate-limit-check]', {
+    key,
+    count: entry.count,
+    window_start_iso: new Date(entry.window_start).toISOString(),
+    now_iso: new Date(now).toISOString()
+  })
+
   if (entry.count > HELP_MAX_REQUESTS) {
     entry.blocked_until = now + HELP_BLOCK_MS
     help_rate_state.set(key, entry)
+
+    const retry_after_seconds = Math.ceil(HELP_BLOCK_MS / 1000)
+
+    console.log('[Help][rate-limit-triggered]', {
+      key,
+      retry_after_seconds
+    })
+
     return {
       allowed: false,
-      retry_after_seconds: Math.ceil(HELP_BLOCK_MS / 1000)
+      retry_after_seconds
     }
   }
 
