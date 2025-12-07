@@ -8,24 +8,36 @@ const { send_password_change_email } = require('../email_service')
 
 const router = express.Router()
 
+// How many wrong attempts before lockout
 const MAX_FAILED_ATTEMPTS = 5
+// Lockout duration in minutes
 const LOCKOUT_MINUTES = 15
+// How many previous passwords to block reuse of
 const PASSWORD_HISTORY_DEPTH = 5
 
+// -------------------- Auth helper with logging --------------------
 function get_auth_user(request) {
   const auth_header = request.headers.authorization || ''
+  console.log('[Account][auth-header]', auth_header)
+
   if (!auth_header.startsWith('Bearer ')) {
+    console.warn('[Account][no-bearer-header]')
     return null
   }
 
   const token = auth_header.slice(7)
   if (!token) {
+    console.warn('[Account][empty-token]')
     return null
   }
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET)
 
+    // Log entire payload so we can see what's inside in Render logs
+    console.log('[Account][jwt-payload]', payload)
+
+    // Normalise fields – different routers / versions may use different keys
     const user_id = payload.userId || payload.sub || payload.id || null
     const email = payload.email || payload.userEmail || null
 
@@ -35,15 +47,19 @@ function get_auth_user(request) {
     }
 
     return {
-      userId: user_id || null,
-      email: email || null
+      userId: user_id,
+      email: email
     }
   } catch (error) {
-    console.warn('[Account][auth-verify-failed]', error.message || error)
+    console.error('[Account][jwt-verify-error]', error.message || error)
+    if (error && error.stack) {
+      console.error(error.stack)
+    }
     return null
   }
 }
 
+// -------------------- Password policy --------------------
 function validate_new_password(password, user) {
   if (!password || typeof password !== 'string') {
     return 'New password is required'
@@ -83,6 +99,7 @@ function validate_new_password(password, user) {
   return null
 }
 
+// -------------------- Security helpers --------------------
 async function get_or_create_security(user_id) {
   let doc = await PasswordSecurity.findOne({ userId: user_id })
   if (!doc) {
@@ -135,13 +152,14 @@ async function check_password_history(user, new_password) {
   for (const entry of recent_history) {
     const reused = await bcrypt.compare(new_password, entry.passwordHash)
     if (reused) {
-      return true
+      return true // Password was reused
     }
   }
-  return false
+  return false // Password is new
 }
 
 async function update_password(user, new_password, current_hash, now) {
+  // Store previous password hash into history BEFORE changing
   const history_entry = new PasswordHistory({
     userId: user._id,
     passwordHash: current_hash,
@@ -149,18 +167,20 @@ async function update_password(user, new_password, current_hash, now) {
   })
   await history_entry.save()
 
+  // User model should hash this in its pre('save') hook
   user.password = new_password
   await user.save()
 }
 
+// -------------------- Route: POST /change-password --------------------
 router.post('/change-password', async function (request, response) {
   try {
     const auth_user = get_auth_user(request)
+    console.log('[Account][change-password][auth_user]', auth_user)
+
     if (!auth_user) {
       return response.status(401).json({ message: 'Unauthorized' })
     }
-
-    console.log('[Account][change-password] auth_user:', auth_user)
 
     const old_password_raw = request.body?.oldPassword || ''
     const new_password_raw = request.body?.newPassword || ''
@@ -174,13 +194,13 @@ router.post('/change-password', async function (request, response) {
         .json({ message: 'Old password and new password are required' })
     }
 
+    // Try lookup by userId first, then by email as fallback
     let user = null
-
     if (auth_user.userId) {
       try {
         user = await User.findById(auth_user.userId)
-      } catch (e) {
-        console.warn('[Account][findById-error]', e.message || e)
+      } catch (cast_error) {
+        console.error('[Account][User.findById-error]', cast_error.message || cast_error)
       }
     }
 
@@ -193,6 +213,7 @@ router.post('/change-password', async function (request, response) {
       return response.status(404).json({ message: 'User not found' })
     }
 
+    // Security state for lockouts
     const security = await get_or_create_security(user._id)
     const now = new Date()
 
@@ -221,6 +242,7 @@ router.post('/change-password', async function (request, response) {
       return response.status(400).json({ message: 'Old password is incorrect' })
     }
 
+    // Old password is correct → reset failure counters
     security.failedAttempts = 0
     security.lockUntil = null
     security.lastAttemptAt = now
@@ -244,6 +266,7 @@ router.post('/change-password', async function (request, response) {
 
     await update_password(user, new_password, current_hash, now)
 
+    // Logging
     const client_ip =
       request.headers['x-forwarded-for'] ||
       request.connection?.remoteAddress ||
@@ -270,7 +293,10 @@ router.post('/change-password', async function (request, response) {
     return response.json({ message: 'Password changed successfully' })
   } catch (error) {
     const msg = error?.message || error
-    console.error('Change password error:', msg)
+    console.error('[Account][change-password-error]', msg)
+    if (error && error.stack) {
+      console.error(error.stack)
+    }
     return response.status(500).json({ message: 'Server error' })
   }
 })
