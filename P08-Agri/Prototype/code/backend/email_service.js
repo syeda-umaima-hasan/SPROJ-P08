@@ -16,7 +16,7 @@ async function send_otp_email(recipient_email = '', otp = '') {
   }
 
   if (!process.env.SMTP_USER) {
-    console.log('OTP for', recipient, 'is', code)
+    console.log('OTP for', recipient_email, 'is', otp)
     return
   }
 
@@ -62,19 +62,15 @@ async function send_help_email(payload = {}) {
   const from_email = process.env.EMAIL_FROM || process.env.SMTP_USER
   const final_subject = '[AgriQual Help] ' + subject
 
-  const body_lines = []
-
-  if (ticket_id) {
-    body_lines.push('Ticket ID: ' + ticket_id)
-    body_lines.push('')
-  }
-
-  body_lines.push('New help request from: ' + (user_email || 'Unknown user'))
-  body_lines.push('')
-  body_lines.push('Subject: ' + subject)
-  body_lines.push('')
-  body_lines.push('Message:')
-  body_lines.push(message)
+  const body_lines = [
+    ...(ticket_id ? ['Ticket ID: ' + ticket_id, ''] : []),
+    'New help request from: ' + (user_email || 'Unknown user'),
+    '',
+    'Subject: ' + subject,
+    '',
+    'Message:',
+    message
+  ]
 
   const mail_options = {
     from: from_email,
@@ -92,7 +88,7 @@ async function send_password_change_email(recipient_email = '') {
   }
 
   if (!process.env.SMTP_USER) {
-    console.log('Password change notification (not actually sent). To:', recipient)
+    console.log('Password change notification (not actually sent). To:', recipient_email)
     return
   }
 
