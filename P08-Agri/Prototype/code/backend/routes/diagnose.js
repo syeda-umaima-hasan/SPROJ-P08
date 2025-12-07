@@ -9,7 +9,6 @@ const Diagnosis = require('../models/Diagnosis')
 const router = express.Router()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } })
 
-// Priority 4: Rate limiting - 10 requests per minute per IP
 const diagnose_limiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: 10, // 10 requests per window
