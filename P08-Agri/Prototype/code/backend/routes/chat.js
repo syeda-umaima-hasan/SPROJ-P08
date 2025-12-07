@@ -189,7 +189,6 @@ router.post('/', async function (request, response) {
       reply: assistant_message
     })
   } catch (error) {
-    // Priority 3: Log error but return generic message
     console.error('Chat route error:', error.message || error)
     response.status(502).json({
       message: 'Chat service temporarily unavailable'

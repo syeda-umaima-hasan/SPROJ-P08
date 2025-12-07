@@ -88,7 +88,6 @@ async function get_or_create_security(user_id) {
 
 router.post('/change-password', async function (request, response) {
   try {
-    // 1) Unauthorized without token
     const auth_user = get_auth_user(request)
     if (!auth_user) {
       return response.status(401).json({ message: 'Unauthorized' })
@@ -117,7 +116,6 @@ router.post('/change-password', async function (request, response) {
     const security = await get_or_create_security(user._id)
     const now = new Date()
 
-    // 2) Temporary lockout after repeated failures
     if (security.lockUntil && security.lockUntil > now) {
       const retry_after_sec = Math.ceil(
         (security.lockUntil.getTime() - now.getTime()) / 1000
@@ -128,20 +126,17 @@ router.post('/change-password', async function (request, response) {
       })
     }
 
-    // 3) Basic check: new password != old password textually
     if (old_password === new_password) {
       return response
         .status(400)
         .json({ message: 'New password must be different from old password' })
     }
 
-    // 4) Weak password rejected by policy
     const policy_error = validate_new_password(new_password, user)
     if (policy_error) {
       return response.status(400).json({ message: policy_error })
     }
 
-    // 5) Wrong old password rejected + failure counting
     const old_matches = await user.comparePassword(old_password)
     if (!old_matches) {
       security.failedAttempts = (security.failedAttempts || 0) + 1
@@ -168,7 +163,6 @@ router.post('/change-password', async function (request, response) {
     security.lastAttemptAt = now
     await security.save()
 
-    // 6) Password reuse blocked (current + history)
     const current_hash = user.password
 
     const same_as_current = await bcrypt.compare(new_password, current_hash)
@@ -199,7 +193,6 @@ router.post('/change-password', async function (request, response) {
     })
     await history_entry.save()
 
-    // 7) Actually change password
     user.password = new_password
     await user.save()
 
@@ -220,7 +213,6 @@ router.post('/change-password', async function (request, response) {
       now.toISOString()
     )
 
-    // 8) Successful password change sends email
     try {
       await send_password_change_email(user.email)
     } catch (email_error) {
