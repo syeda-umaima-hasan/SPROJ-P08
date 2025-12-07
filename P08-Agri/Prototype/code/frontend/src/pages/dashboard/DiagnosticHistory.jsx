@@ -34,28 +34,28 @@ function getConfidenceBarColor(confidence) {
 
 function DiagnosticHistory() {
   const navigate = useNavigate()
-  const [diagnoses, set_diagnoses] = useState([])
-  const [is_loading, set_is_loading] = useState(true)
-  const [error, set_error] = useState('')
-  const [total, set_total] = useState(0)
-  const [selected_diagnosis, set_selected_diagnosis] = useState(null)
-  const [is_detail_modal_open, set_is_detail_modal_open] = useState(false)
+  const [diagnoses, setDiagnoses] = useState([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [total, setTotal] = useState(0)
+  const [selectedDiagnosis, setSelectedDiagnosis] = useState(null)
+  const [isDetailModalOpen, setIsDetailModalOpen] = useState(false)
 
   useEffect(() => {
     load_history()
   }, [])
 
   async function load_history() {
-    set_is_loading(true)
-    set_error('')
+    setIsLoading(true)
+    setError('')
     try {
       const data = await get_diagnosis_history(50, 0)
-      set_diagnoses(data.diagnoses || [])
-      set_total(data.total || 0)
+      setDiagnoses(data.diagnoses || [])
+      setTotal(data.total || 0)
     } catch (err) {
-      set_error(err.message || 'Failed to load diagnosis history')
+      setError(err.message || 'Failed to load diagnosis history')
     } finally {
-      set_is_loading(false)
+      setIsLoading(false)
     }
   }
 
@@ -64,13 +64,13 @@ function DiagnosticHistory() {
   }
 
   function handle_view_details(diagnosis) {
-    set_selected_diagnosis(diagnosis)
-    set_is_detail_modal_open(true)
+    setSelectedDiagnosis(diagnosis)
+    setIsDetailModalOpen(true)
   }
 
   function close_detail_modal() {
-    set_is_detail_modal_open(false)
-    set_selected_diagnosis(null)
+    setIsDetailModalOpen(false)
+    setSelectedDiagnosis(null)
   }
 
   return (
@@ -99,7 +99,7 @@ function DiagnosticHistory() {
 
       {/* Main Content */}
       <div className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
-        {is_loading && (
+        {isLoading && (
           <div className="flex justify-center items-center py-12">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-600"></div>
           </div>
@@ -116,7 +116,7 @@ function DiagnosticHistory() {
           </div>
         )}
 
-        {!is_loading && !error && diagnoses.length === 0 && (
+        {!isLoading && !error && diagnoses.length === 0 && (
           <div className="bg-white rounded-lg shadow-md p-12 text-center">
             <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -132,7 +132,7 @@ function DiagnosticHistory() {
           </div>
         )}
 
-        {!is_loading && !error && diagnoses.length > 0 && (
+        {!isLoading && !error && diagnoses.length > 0 && (
           <div className="space-y-4">
             {diagnoses.map((diagnosis) => (
               <div
@@ -171,7 +171,7 @@ function DiagnosticHistory() {
       </div>
 
       {/* Detail Modal */}
-      {is_detail_modal_open && selected_diagnosis && (
+      {isDetailModalOpen && selectedDiagnosis && (
         <div 
           role="dialog" 
           aria-modal="true"
@@ -203,7 +203,7 @@ function DiagnosticHistory() {
                 <div className="space-y-4">
                   <div>
                     <div className="block text-sm font-medium text-gray-700 mb-1">Diagnosis</div>
-                    <p className="text-lg font-semibold text-gray-900">{selected_diagnosis.diagnosis}</p>
+                    <p className="text-lg font-semibold text-gray-900">{selectedDiagnosis.diagnosis}</p>
                   </div>
 
                   <div>
@@ -211,26 +211,26 @@ function DiagnosticHistory() {
                     <div className="flex items-center space-x-2">
                       <div className="flex-1 bg-gray-200 rounded-full h-3">
                         <div
-                          className={`h-3 rounded-full ${getConfidenceBarColor(selected_diagnosis.confidence)}`}
-                          style={{ width: `${selected_diagnosis.confidence * 100}%` }}
+                          className={`h-3 rounded-full ${getConfidenceBarColor(selectedDiagnosis.confidence)}`}
+                          style={{ width: `${selectedDiagnosis.confidence * 100}%` }}
                         ></div>
                       </div>
-                      <span className={`text-sm font-medium ${getConfidenceColor(selected_diagnosis.confidence)}`}>
-                        {(selected_diagnosis.confidence * 100).toFixed(1)}%
+                      <span className={`text-sm font-medium ${getConfidenceColor(selectedDiagnosis.confidence)}`}>
+                        {(selectedDiagnosis.confidence * 100).toFixed(1)}%
                       </span>
                     </div>
                   </div>
 
                   <div>
                     <div className="block text-sm font-medium text-gray-700 mb-1">Date</div>
-                    <p className="text-gray-900">{formatDate(selected_diagnosis.created_at)}</p>
+                    <p className="text-gray-900">{formatDate(selectedDiagnosis.created_at)}</p>
                   </div>
 
-                  {selected_diagnosis.alternatives && selected_diagnosis.alternatives.length > 0 && (
+                  {selectedDiagnosis.alternatives && selectedDiagnosis.alternatives.length > 0 && (
                     <div>
                       <div className="block text-sm font-medium text-gray-700 mb-2">Alternative Diagnoses</div>
                       <div className="space-y-2">
-                        {selected_diagnosis.alternatives.map((alt, index) => (
+                        {selectedDiagnosis.alternatives.map((alt, index) => (
                           <div key={alt.label || `alt-${index}`} className="flex justify-between items-center p-2 bg-gray-50 rounded">
                             <span className="text-gray-900">{alt.label}</span>
                             <span className="text-sm text-gray-600">{(alt.confidence * 100).toFixed(1)}%</span>
@@ -240,11 +240,11 @@ function DiagnosticHistory() {
                     </div>
                   )}
 
-                  {selected_diagnosis.recommendations && selected_diagnosis.recommendations.length > 0 && (
+                  {selectedDiagnosis.recommendations && selectedDiagnosis.recommendations.length > 0 && (
                     <div>
                       <div className="block text-sm font-medium text-gray-700 mb-2">Recommendations</div>
                       <ul className="space-y-2">
-                        {selected_diagnosis.recommendations.map((rec, index) => (
+                        {selectedDiagnosis.recommendations.map((rec, index) => (
                           <li key={`rec-${index}-${rec.substring(0, 20)}`} className="flex items-start">
                             <svg className="w-5 h-5 text-green-600 mr-2 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                               <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
@@ -256,9 +256,9 @@ function DiagnosticHistory() {
                     </div>
                   )}
 
-                  {selected_diagnosis.processing_ms && (
+                  {selectedDiagnosis.processing_ms && (
                     <div className="text-xs text-gray-500">
-                      Processing time: {selected_diagnosis.processing_ms}ms
+                      Processing time: {selectedDiagnosis.processing_ms}ms
                     </div>
                   )}
                 </div>
