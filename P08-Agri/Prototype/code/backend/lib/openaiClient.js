@@ -1,116 +1,79 @@
 const OpenAI = require('openai')
 
-const api_key =
-  process.env.OPENAI_API_KEY ||
-  process.env.OPENAI_KEY ||
-  process.env.OPENAI_API_TOKEN
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL || undefined
+})
 
-console.log('[OpenAI] api key present?', Boolean(api_key))
-
-let openai_client = null
-
-if (api_key) {
-  try {
-    openai_client = new OpenAI({ apiKey: api_key })
-    console.log('[OpenAI] client created successfully')
-  } catch (error) {
-    console.error('[OpenAI] failed to create client:', error.message || error)
-  }
-} else {
-  console.warn('[OpenAI] no API key found; LLM weather advice disabled')
-}
-
-async function get_weather_llm_advice(payload) {
-  if (!openai_client) {
-    const msg = 'OpenAI client is null (likely no API key on server)'
-    console.warn('[OpenAI]', msg)
-    return { text: null, error: msg }
+async function get_weather_llm_advice(weather_payload) {
+  if (!process.env.OPENAI_API_KEY) {
+    console.error('Missing OPENAI_API_KEY, skipping LLM advice')
+    return null
   }
 
+  const model_name = process.env.OPENAI_MODEL || 'gpt-4.1-mini'
+
+  const system_prompt = `
+You are an agronomy assistant helping small wheat farmers in Pakistan.
+You receive structured weather data and simple rule-based advice.
+Your job is to translate this into clear, farmer-friendly guidance.
+Keep language simple, practical, and focused on wheat crop care.
+Always prioritise farmer safety and sustainable practices.
+`.trim()
+
+  const user_prompt = `
+Here is the structured weather context and basic advice as JSON:
+
+${JSON.stringify(weather_payload, null, 2)}
+
+Using this context, write more detailed crop-care guidance for a wheat farmer.
+
+Important formatting rules:
+- Reply in plain text only.
+- Do not use any markdown symbols like *, **, #, ###.
+- Use this structure exactly:
+
+More Detailed Explanations:
+Summary:
+- One or two short sentences about what kind of day it is for farming.
+
+Actions to take:
+- 4 to 6 bullet points starting with "- ".
+- Focus on irrigation, spraying, fertilizer, monitoring crops, and any other relevant actions today.
+
+Things to avoid:
+- 4 to 6 bullet points starting with "- ".
+- Include what mistakes to avoid, safety tips, and timing issues.
+
+Constraints:
+- Maximum length about 250 words.
+- Base everything on the actual numbers you see (rain, temperature, wind, UV, etc.).
+- If rain is likely or conditions are risky, be conservative and focus on risk reduction.
+`.trim()
+
   try {
-    const city = payload.city || 'the user location'
-    const current = payload.current || {}
-    const today = payload.today || {}
-    const advice = Array.isArray(payload.advice) ? payload.advice : []
-
-    const system_message =
-      'You are an expert Pakistani agronomy assistant. ' +
-      'You receive structured weather data and must give practical, localized crop advice for small and medium farmers. ' +
-      'Write in clear, simple English bullets, focusing on what to do and what to avoid today and in the next 24 hours.'
-
-    const user_message =
-      'Location: ' +
-      city +
-      '\n' +
-      'Current conditions:\n' +
-      '- Temperature: ' +
-      current.temperature_c +
-      '°C\n' +
-      '- Wind speed: ' +
-      current.wind_speed_kmh +
-      ' km/h\n' +
-      '\n' +
-      'Today forecast:\n' +
-      '- Max temp: ' +
-      today.tmax_c +
-      '°C\n' +
-      '- Min temp: ' +
-      today.tmin_c +
-      '°C\n' +
-      '- Precipitation: ' +
-      today.precipitation_mm +
-      ' mm\n' +
-      '- Max UV index: ' +
-      today.uv_index_max +
-      '\n' +
-      '\n' +
-      'Baseline rule-based advice from the app:\n' +
-      advice.map((x, i) => String(i + 1) + '. ' + x).join('\n') +
-      '\n' +
-      '\n' +
-      'Using all this, give a detailed but concise advisory for crop care today and the next 24 hours. ' +
-      'Use short paragraphs and bullet points. Start with a one line summary, then give 3–7 specific actions to take, ' +
-      'and 3–5 things to avoid. Focus on irrigation, spraying, fertilizer, and disease risk.'
-
-    console.log('[OpenAI] calling model gpt-4o-mini for weather advice')
-
-    const response = await openai_client.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: system_message },
-        { role: 'user', content: user_message }
-      ],
-      max_tokens: 400,
-      temperature: 0.5
+    const response = await client.responses.create({
+      model: model_name,
+      input: [
+        { role: 'system', content: system_prompt },
+        { role: 'user', content: user_prompt }
+      ]
     })
 
-    const content =
-      response &&
-      response.choices &&
-      response.choices[0] &&
-      response.choices[0].message &&
-      response.choices[0].message.content
+    const output_block = response.output && response.output[0]
+    const content_block = output_block && output_block.content && output_block.content[0]
+    const text_value = content_block && content_block.text
 
-    if (!content) {
-      const msg = 'Empty content returned from OpenAI weather advice call'
-      console.warn('[OpenAI]', msg)
-      return { text: null, error: msg }
+    if (!text_value) {
+      console.error('OpenAI weather advice: empty text in response')
+      return null
     }
 
-    console.log('[OpenAI] weather advice generated successfully')
-    return { text: String(content).trim(), error: null }
+    return text_value
   } catch (error) {
-    const status = error && error.status
-    const detail =
-      (error &&
-        error.response &&
-        error.response.data &&
-        (error.response.data.message || error.response.data.error)) ||
-      error.message ||
-      String(error)
-
-    console.error('[OpenAI] error while generating weather advice. status=', status, 'detail=', detail)
-    return { text: null, error: 'status=' + status + ' detail=' + detail }
+    const message = error.response?.data || error.message || error
+    console.error('OpenAI weather advice error:', message)
+    return null
   }
 }
 
