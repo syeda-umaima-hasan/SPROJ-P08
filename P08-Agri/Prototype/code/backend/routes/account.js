@@ -8,8 +8,11 @@ const { send_password_change_email } = require('../email_service')
 
 const router = express.Router()
 
+// How many wrong attempts before lockout
 const MAX_FAILED_ATTEMPTS = 5
+// Lockout duration in minutes
 const LOCKOUT_MINUTES = 15
+// How many previous passwords to block reuse of
 const PASSWORD_HISTORY_DEPTH = 5
 
 function get_auth_user(request) {
@@ -143,21 +146,34 @@ async function check_password_history(user, new_password) {
   for (const entry of recent_history) {
     const reused = await bcrypt.compare(new_password, entry.passwordHash)
     if (reused) {
-      return true
+      return true // Password was reused
     }
   }
-  return false
+  return false // Password is new
 }
 
-async function update_password(user, new_password, current_hash, now) {
-  const history_entry = new PasswordHistory({
-    userId: user._id,
-    passwordHash: current_hash,
-    createdAt: now
-  })
-  await history_entry.save()
+function get_current_password_hash(user) {
+  const current_hash = user.password_hash || user.password || null
+  return current_hash
+}
 
-  user.password = new_password
+async function update_password(user, new_password, previous_hash, now) {
+  if (previous_hash) {
+    const history_entry = new PasswordHistory({
+      userId: user._id,
+      passwordHash: previous_hash,
+      createdAt: now
+    })
+    await history_entry.save()
+  }
+
+  const salt_rounds = 10
+  const new_hash = await bcrypt.hash(new_password, salt_rounds)
+
+  user.password_hash = new_hash
+  // Clear legacy field so we don't keep stale hashes around
+  user.password = undefined
+
   await user.save()
 }
 
@@ -182,35 +198,15 @@ router.post('/change-password', async function (request, response) {
         .json({ message: 'Old password and new password are required' })
     }
 
-    // ===== Load user WITH password hash selected =====
-    let user = null
-
-    if (auth_user.userId) {
-      try {
-        user = await User.findById(auth_user.userId).select('+password')
-      } catch (cast_error) {
-        console.error(
-          '[Account][User.findById-error]',
-          cast_error.message || cast_error
-        )
-      }
-    }
-
-    if (!user && auth_user.email) {
-      user = await User.findOne({ email: auth_user.email }).select('+password')
-    }
-
+    const user = await User.findById(auth_user.userId)
     if (!user) {
-      console.warn('[Account][user-not-found]', auth_user)
       return response.status(404).json({ message: 'User not found' })
     }
 
-    // Extra debug: see if password is present
-    const user_plain = user.toObject ? user.toObject() : user
     console.log('[Account][user-found]', {
       id: user._id.toString(),
       email: user.email,
-      hasPassword: typeof user_plain.password === 'string'
+      hasPassword: !!(user.password_hash || user.password)
     })
 
     const security = await get_or_create_security(user._id)
@@ -235,8 +231,22 @@ router.post('/change-password', async function (request, response) {
       return response.status(400).json({ message: policy_error })
     }
 
-    // 🔑 Compare old password with stored hash
-    const old_matches = await bcrypt.compare(old_password, user.password)
+    const current_hash = get_current_password_hash(user)
+
+    if (!current_hash) {
+      console.warn(
+        '[Account][no-current-hash]',
+        'User',
+        user._id.toString(),
+        'has no stored password'
+      )
+      return response.status(400).json({
+        message:
+          'This account does not have a password set yet. Please use "Forgot password" / reset flow.'
+      })
+    }
+
+    const old_matches = await bcrypt.compare(old_password, current_hash)
     if (!old_matches) {
       await handle_failed_attempt(security, now, user)
       return response.status(400).json({ message: 'Old password is incorrect' })
@@ -246,8 +256,6 @@ router.post('/change-password', async function (request, response) {
     security.lockUntil = null
     security.lastAttemptAt = now
     await security.save()
-
-    const current_hash = user.password
 
     const same_as_current = await bcrypt.compare(new_password, current_hash)
     if (same_as_current) {
