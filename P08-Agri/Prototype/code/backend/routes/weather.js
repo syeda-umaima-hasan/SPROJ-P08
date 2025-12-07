@@ -1,156 +1,136 @@
 const express = require('express')
+const axios = require('axios')
 const router = express.Router()
-const { get_weather_llm_advice } = require('../lib/openaiClient')
+const { get_llm_weather_advice } = require('../lib/openaiClient')
 
 const WEATHER_API_URL = 'https://api.open-meteo.com/v1/forecast'
 
-function build_rule_based_advice(today) {
-  const lines = []
-
-  if (today.precipitation_mm === 0) {
-    lines.push(
-      'No significant rain today: if soil is dry, plan irrigation early morning or late evening.'
-    )
-  } else if (today.precipitation_mm > 0 && today.precipitation_mm < 10) {
-    lines.push(
-      'Light to moderate rain expected: avoid unnecessary irrigation and watch for water logging in low-lying areas.'
-    )
-  } else if (today.precipitation_mm >= 10) {
-    lines.push(
-      'Heavy rain expected: make sure drainage channels are clear and avoid irrigation or spraying today.'
-    )
-  }
-
-  if (today.uv_index_max >= 7) {
-    lines.push(
-      'High UV index: avoid working in the field during peak afternoon hours and protect workers with caps and hydration.'
-    )
-  }
-
-  if (today.wind_gust_max_kmh && today.wind_gust_max_kmh > 25) {
-    lines.push(
-      'Strong winds expected: avoid pesticide or herbicide spraying and secure loose materials in the field.'
-    )
-  } else {
-    lines.push(
-      'Calmer winds: if spraying is needed, this is a suitable window, but always follow label safety instructions.'
-    )
-  }
-
-  return lines
-}
-
 router.get('/', async function (request, response) {
   try {
-    const lat_raw = request.query.lat
-    const lon_raw = request.query.lon
+    const latitude = parseFloat(request.query.lat)
+    const longitude = parseFloat(request.query.lon)
 
-    if (!lat_raw || !lon_raw) {
+    if (Number.isNaN(latitude) === true || Number.isNaN(longitude) === true) {
       return response.status(400).json({
         ok: false,
-        message: 'lat and lon query parameters are required'
+        message: 'lat and lon query parameters are required and must be numbers'
       })
     }
 
-    const latitude = Number(lat_raw)
-    const longitude = Number(lon_raw)
-
-    if (Number.isNaN(latitude) || Number.isNaN(longitude)) {
-      return response.status(400).json({
-        ok: false,
-        message: 'lat and lon must be valid numbers'
-      })
-    }
-
-    const weather_url =
-      WEATHER_API_URL +
-      '?latitude=' +
-      encodeURIComponent(latitude) +
-      '&longitude=' +
-      encodeURIComponent(longitude) +
-      '&hourly=temperature_2m,precipitation,wind_speed_10m,uv_index' +
-      '&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,uv_index_max,wind_gusts_10m_max' +
-      '&current_weather=true' +
-      '&timezone=auto'
-
-    console.log('[Weather] fetching from open-meteo:', weather_url)
-
-    // Node 20 has global fetch
-    const res = await fetch(weather_url)
-    const data = await res.json()
-
-    if (!res.ok) {
-      console.error('[Weather] weather api error status=', res.status, 'body=', data)
-      return response.status(502).json({
-        ok: false,
-        message: 'Failed to fetch weather data',
-        detail: data
-      })
-    }
-
-    const current = data.current_weather || {}
-    const daily = data.daily || {}
-
-    const today = {
-      tmax_c: Array.isArray(daily.temperature_2m_max) ? daily.temperature_2m_max[0] : null,
-      tmin_c: Array.isArray(daily.temperature_2m_min) ? daily.temperature_2m_min[0] : null,
-      precipitation_mm: Array.isArray(daily.precipitation_sum) ? daily.precipitation_sum[0] : null,
-      uv_index_max: Array.isArray(daily.uv_index_max) ? daily.uv_index_max[0] : null,
-      wind_gust_max_kmh: Array.isArray(daily.wind_gusts_10m_max)
-        ? daily.wind_gusts_10m_max[0]
-        : null
-    }
-
-    const current_block = {
-      temperature_c: current.temperature,
-      wind_speed_kmh: current.windspeed
-    }
-
-    const advice = build_rule_based_advice(today)
-
-    const base_payload = {
-      city: data.timezone || 'Your location',
+    const params = {
       latitude,
       longitude,
-      current: current_block,
-      today,
-      advice
+      hourly: ['temperature_2m', 'precipitation', 'wind_speed_10m', 'uv_index'].join(','),
+      daily: [
+        'temperature_2m_max',
+        'temperature_2m_min',
+        'precipitation_sum',
+        'uv_index_max',
+        'wind_gusts_10m_max'
+      ].join(','),
+      current_weather: true,
+      timezone: 'auto'
     }
 
+    const url =
+      `${WEATHER_API_URL}?latitude=${latitude}&longitude=${longitude}` +
+      '&hourly=temperature_2m,precipitation,wind_speed_10m,uv_index' +
+      '&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,uv_index_max,wind_gusts_10m_max' +
+      '&current_weather=true&timezone=auto'
+
+    console.log('[Weather] fetching from open-meteo:', url)
+
+    const api_response = await axios.get(WEATHER_API_URL, { params })
+    const data = api_response.data || {}
+
+    const current = {
+      temperature_c: data.current_weather?.temperature || data.current?.temperature_2m,
+      wind_speed_kmh: data.current_weather?.windspeed || data.current?.wind_speed_10m
+    }
+
+    const today = {
+      tmax_c: data.daily?.temperature_2m_max?.[0],
+      tmin_c: data.daily?.temperature_2m_min?.[0],
+      precipitation_mm: data.daily?.precipitation_sum?.[0],
+      uv_index_max: data.daily?.uv_index_max?.[0],
+      wind_gust_max_kmh: data.daily?.wind_gusts_10m_max?.[0]
+    }
+
+    const advice = []
+
+    if ((today.precipitation_mm || 0) === 0) {
+      advice.push(
+        'No significant rain today: if soil is dry, plan irrigation early morning or late evening.'
+      )
+    } else {
+      advice.push(
+        'Rain expected today: avoid unnecessary irrigation and make sure fields have proper drainage.'
+      )
+    }
+
+    if ((current.wind_speed_kmh || 0) < 10) {
+      advice.push(
+        'Calmer winds: if spraying is needed, this is a suitable window, but always follow label safety instructions.'
+      )
+    } else {
+      advice.push(
+        'Stronger winds: avoid spraying pesticides or fertilizers to prevent drift.'
+      )
+    }
+
+    const city_label = data.timezone || 'Your location'
+
     console.log('[Weather] base payload for frontend + LLM:', {
-      city: base_payload.city,
-      current: base_payload.current,
-      today: base_payload.today,
-      advice_count: base_payload.advice.length
+      city: city_label,
+      current,
+      today,
+      advice_count: advice.length
     })
 
     let llm_advice = null
-    let llm_error = null
 
     try {
-      const result = await get_weather_llm_advice(base_payload)
-      llm_advice = result.text
-      llm_error = result.error
+      console.log('[Weather] calling get_llm_weather_advice...')
+      llm_advice = await get_llm_weather_advice({
+        city: city_label,
+        latitude,
+        longitude,
+        current,
+        today,
+        advice
+      })
+      console.log(
+        '[Weather] LLM advice result:',
+        llm_advice ? `OK (length ${llm_advice.length})` : 'NULL'
+      )
     } catch (error) {
-      llm_error = error.message || String(error)
-      console.error('[Weather] unexpected error while calling get_weather_llm_advice:', llm_error)
+      console.error(
+        '[Weather] get_llm_weather_advice failed:',
+        error?.message || error
+      )
+      llm_advice = null
     }
 
-    if (llm_error) {
-      console.warn('[Weather] llm_error:', llm_error)
+    const payload = {
+      city: city_label,
+      latitude,
+      longitude,
+      current,
+      today,
+      advice,
+      llm_advice
     }
 
-    const final_payload = Object.assign({}, base_payload, {
-      llm_advice,
-      llm_error
-    })
-
-    return response.json(final_payload)
+    response.json(payload)
   } catch (error) {
-    console.error('[Weather] unhandled error:', error.message || error)
-    return response.status(500).json({
+    console.error(
+      '[Weather] Unexpected error:',
+      error?.response?.data || error?.message || error
+    )
+    response.status(500).json({
       ok: false,
-      message: 'Weather service temporarily unavailable'
+      message: 'Failed to fetch weather data',
+      detail: error?.message || String(error)
     })
   }
 })

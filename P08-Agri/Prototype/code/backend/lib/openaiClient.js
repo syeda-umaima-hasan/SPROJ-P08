@@ -1,82 +1,110 @@
 const OpenAI = require('openai')
 
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseURL: process.env.OPENAI_BASE_URL || undefined
-})
+const api_key = process.env.OPENAI_API_KEY
+const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini'
+const base_url = process.env.OPENAI_BASE_URL
 
-async function get_weather_llm_advice(weather_payload) {
-  if (!process.env.OPENAI_API_KEY) {
-    console.error('Missing OPENAI_API_KEY, skipping LLM advice')
+console.log('[OpenAI] Initialising client...')
+console.log('[OpenAI] Model:', model)
+console.log('[OpenAI] Base URL:', base_url || '(default)')
+console.log('[OpenAI] API key present?', api_key ? 'YES' : 'NO')
+
+let client = null
+
+if (!api_key) {
+  console.warn(
+    '[OpenAI] OPENAI_API_KEY is missing. LLM weather advice will be disabled and llm_advice will be null.'
+  )
+} else {
+  const options = { apiKey: api_key }
+
+  if (base_url) {
+    options.baseURL = base_url
+  }
+
+  try {
+    client = new OpenAI(options)
+    console.log('[OpenAI] Client created successfully')
+  } catch (error) {
+    console.error(
+      '[OpenAI] Failed to create client:',
+      error?.message || error
+    )
+    client = null
+  }
+}
+
+async function get_llm_weather_advice(context) {
+  if (!client) {
+    console.warn('[OpenAI] Client not available, returning null advice')
     return null
   }
 
-  const model_name = process.env.OPENAI_MODEL || 'gpt-4.1-mini'
-
-  const system_prompt = `
-You are an agronomy assistant helping small wheat farmers in Pakistan.
-You receive structured weather data and simple rule-based advice.
-Your job is to translate this into clear, farmer-friendly guidance.
-Keep language simple, practical, and focused on wheat crop care.
-Always prioritise farmer safety and sustainable practices.
-`.trim()
-
-  const user_prompt = `
-Here is the structured weather context and basic advice as JSON:
-
-${JSON.stringify(weather_payload, null, 2)}
-
-Using this context, write more detailed crop-care guidance for a wheat farmer.
-
-Important formatting rules:
-- Reply in plain text only.
-- Do not use any markdown symbols like *, **, #, ###.
-- Use this structure exactly:
-
-More Detailed Explanations:
-Summary:
-- One or two short sentences about what kind of day it is for farming.
-
-Actions to take:
-- 4 to 6 bullet points starting with "- ".
-- Focus on irrigation, spraying, fertilizer, monitoring crops, and any other relevant actions today.
-
-Things to avoid:
-- 4 to 6 bullet points starting with "- ".
-- Include what mistakes to avoid, safety tips, and timing issues.
-
-Constraints:
-- Maximum length about 250 words.
-- Base everything on the actual numbers you see (rain, temperature, wind, UV, etc.).
-- If rain is likely or conditions are risky, be conservative and focus on risk reduction.
-`.trim()
-
   try {
-    const response = await client.responses.create({
-      model: model_name,
-      input: [
-        { role: 'system', content: system_prompt },
-        { role: 'user', content: user_prompt }
+    const {
+      city,
+      latitude,
+      longitude,
+      current,
+      today,
+      advice
+    } = context || {}
+
+    const system_message =
+      'You are an agricultural expert helping small wheat farmers in Pakistan. ' +
+      'You will receive structured weather data (temperature, rain, wind, UV index) ' +
+      'and some simple bullet-point recommendations. Your job is to generate a detailed, ' +
+      'farmer-friendly explanation of what they should do today. ' +
+      'Write clearly, in simple English, in 2–4 short paragraphs and 5–10 bullet points. ' +
+      'Focus on irrigation, spraying, fertilizer, and anything to avoid today. ' +
+      'Do NOT ask questions back to the user. Just give advice.'
+
+    const user_message =
+      `Location: ${city || 'Unknown'} (lat=${latitude}, lon=${longitude})\n` +
+      `Current weather:\n` +
+      `- Temperature: ${current?.temperature_c}°C\n` +
+      `- Wind speed: ${current?.wind_speed_kmh} km/h\n\n` +
+      `Today forecast:\n` +
+      `- Max temp: ${today?.tmax_c}°C\n` +
+      `- Min temp: ${today?.tmin_c}°C\n` +
+      `- Precipitation: ${today?.precipitation_mm} mm\n` +
+      `- Max UV index: ${today?.uv_index_max}\n` +
+      `- Max wind gust: ${today?.wind_gust_max_kmh} km/h\n\n` +
+      `Baseline crop-care recommendations:\n` +
+      (Array.isArray(advice) ? advice.map((item) => `- ${item}`).join('\n') : '') +
+      '\n\nNow generate a detailed but concise explanation for the farmer. ' +
+      'Start with a short summary, then actions to take, then things to avoid.'
+
+    console.log('[OpenAI] Calling model for weather advice...')
+
+    const completion = await client.chat.completions.create({
+      model,
+      temperature: 0.6,
+      max_tokens: 600,
+      messages: [
+        { role: 'system', content: system_message },
+        { role: 'user', content: user_message }
       ]
     })
 
-    const output_block = response.output && response.output[0]
-    const content_block = output_block && output_block.content && output_block.content[0]
-    const text_value = content_block && content_block.text
+    const text =
+      completion.choices?.[0]?.message?.content?.trim() || null
 
-    if (!text_value) {
-      console.error('OpenAI weather advice: empty text in response')
-      return null
-    }
+    console.log(
+      '[OpenAI] Weather advice generated. Length:',
+      text ? text.length : 0
+    )
 
-    return text_value
+    return text
   } catch (error) {
-    const message = error.response?.data || error.message || error
-    console.error('OpenAI weather advice error:', message)
+    console.error(
+      '[OpenAI] Error while generating weather advice:',
+      error?.response?.data || error?.message || error
+    )
     return null
   }
 }
 
 module.exports = {
-  get_weather_llm_advice
+  get_llm_weather_advice
 }
