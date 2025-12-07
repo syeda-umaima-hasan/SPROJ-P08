@@ -31,6 +31,7 @@ function get_auth_user(request) {
     const payload = jwt.verify(token, process.env.JWT_SECRET)
     return payload
   } catch (error) {
+    console.error('JWT verification failed:', error.message)
     return null
   }
 }
@@ -43,6 +44,31 @@ function get_ml_service_url() {
   return ''
 }
 
+function validate_image_file(file) {
+  if (!file) {
+    return { valid: false, message: 'Image is required in field "image"' }
+  }
+  
+  const max_size = 10 * 1024 * 1024
+  if (file.size > max_size) {
+    return { valid: false, message: 'Image size exceeds 10MB limit' }
+  }
+  
+  const allowed_types = ['image/jpeg', 'image/jpg', 'image/png']
+  if (!allowed_types.includes(file.mimetype)) {
+    return { valid: false, message: 'Invalid image type. Only JPG and PNG are allowed' }
+  }
+  
+  return { valid: true }
+}
+
+function get_error_message(status) {
+  if (status === 404) return 'ML service unavailable'
+  if (status === 415) return 'Unsupported image format'
+  if (status === 429) return 'Service temporarily busy'
+  return 'Diagnosis request failed'
+}
+
 router.post('/', diagnose_limiter, upload.single('image'), async (req, res) => {
   // Priority 1: Check authentication FIRST
   const auth_user = get_auth_user(req)
@@ -51,23 +77,10 @@ router.post('/', diagnose_limiter, upload.single('image'), async (req, res) => {
     return
   }
   
-  // Priority 2: Validate image is present
-  if (!req.file) {
-    res.status(400).json({ message: 'Image is required in field "image"' })
-    return
-  }
-  
-  // Priority 2: Validate file size (max 10MB)
-  const max_size = 10 * 1024 * 1024
-  if (req.file.size > max_size) {
-    res.status(400).json({ message: 'Image size exceeds 10MB limit' })
-    return
-  }
-  
-  // Priority 2: Validate file type (only jpg, png)
-  const allowed_types = ['image/jpeg', 'image/jpg', 'image/png']
-  if (!allowed_types.includes(req.file.mimetype)) {
-    res.status(400).json({ message: 'Invalid image type. Only JPG and PNG are allowed' })
+  // Priority 2: Validate image
+  const validation = validate_image_file(req.file)
+  if (!validation.valid) {
+    res.status(400).json({ message: validation.message })
     return
   }
   
@@ -83,7 +96,7 @@ router.post('/', diagnose_limiter, upload.single('image'), async (req, res) => {
     form.append('image', req.file.buffer, { filename, contentType: content_type })
     const url = `${ml_base}/api/diagnose`
     const ml_resp = await axios.post(url, form, { headers: form.getHeaders(), timeout: 30000 })
-    if (!ml_resp || !ml_resp.data) {
+    if (!ml_resp?.data) {
       res.status(502).json({ message: 'Empty response from ML service' })
       return
     }
@@ -99,8 +112,8 @@ router.post('/', diagnose_limiter, upload.single('image'), async (req, res) => {
         processing_ms: ml_resp.data.processing_ms
       })
       await diagnosis_record.save()
-    } catch (db_err) {
-      console.error('Failed to save diagnosis to database:', db_err.message || db_err)
+    } catch (error_) {
+      console.error('Failed to save diagnosis to database:', error_.message || error_)
       // Continue even if saving fails - user still gets result
     }
     
@@ -108,8 +121,8 @@ router.post('/', diagnose_limiter, upload.single('image'), async (req, res) => {
   } catch (err) {
     // Priority 3: Log detailed error but return generic message
     console.error('Diagnosis error:', err.message || err)
-    const status = err && err.response && err.response.status ? err.response.status : null
-    const safe_message = status === 404 ? 'ML service unavailable' : status === 415 ? 'Unsupported image format' : status === 429 ? 'Service temporarily busy' : 'Diagnosis request failed'
+    const status = err?.response?.status ?? null
+    const safe_message = get_error_message(status)
     res.status(502).json({ message: safe_message })
   }
 })
