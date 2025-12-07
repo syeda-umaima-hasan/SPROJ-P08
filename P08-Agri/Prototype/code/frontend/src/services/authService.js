@@ -43,6 +43,10 @@ export const register = async (userData) => {
 export const registerWithOtp = async (userData) => {
   try {
     const response = await api.post('/register-otp', userData)
+    // you can log debug_otp in dev if you want:
+    if (response.data?.debug_otp && process.env.NODE_ENV !== 'production') {
+      console.log('[Auth] Debug OTP (dev only):', response.data.debug_otp)
+    }
     return response.data
   } catch (error) {
     const message =
@@ -80,10 +84,36 @@ export const login = async (credentials) => {
     }
     return response.data
   } catch (error) {
-    const message =
+    let message =
       error?.response?.data?.message ||
       error?.response?.data?.error ||
       'Login failed'
+
+    // If backend indicates lockout (HTTP 429) with retryAfterSeconds, show a human-readable timer
+    if (error?.response?.status === 429) {
+      const rawSeconds = Number(error?.response?.data?.retryAfterSeconds)
+      if (!Number.isNaN(rawSeconds) && rawSeconds > 0) {
+        const minutes = Math.floor(rawSeconds / 60)
+        const seconds = rawSeconds % 60
+
+        let timePart = ''
+        if (minutes > 0) {
+          timePart += `${minutes} minute${minutes === 1 ? '' : 's'}`
+        }
+        if (seconds > 0) {
+          if (timePart) {
+            timePart += ' and '
+          }
+          timePart += `${seconds} second${seconds === 1 ? '' : 's'}`
+        }
+        if (!timePart) {
+          timePart = `${rawSeconds} seconds`
+        }
+
+        message = `${message} You can try again in approximately ${timePart}.`
+      }
+    }
+
     throw new Error(message)
   }
 }

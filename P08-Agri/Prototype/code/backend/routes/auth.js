@@ -1,532 +1,431 @@
 const express = require('express')
-const bcrypt = require('bcryptjs')
+const bcrypt = require('bcrypt')
 const jwt = require('jsonwebtoken')
-const mongoose = require('mongoose')
+const crypto = require('crypto')
+const nodemailer = require('nodemailer')
 const User = require('../models/User')
-const LoginAttempt = require('../models/LoginAttempt')
 
 const router = express.Router()
 
-const jwt_secret = process.env.JWT_SECRET || 'change_me_in_production'
-const jwt_expires_in = process.env.JWT_EXPIRES_IN || '2h'
+// ====== Security-related config ======
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me'
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '2h'
+const LOGIN_MAX_FAILED_ATTEMPTS = parseInt(process.env.LOGIN_MAX_FAILED_ATTEMPTS || '5', 10)
+const LOGIN_LOCKOUT_MINUTES = parseInt(process.env.LOGIN_LOCKOUT_MINUTES || '15', 10)
 
-const max_failed_attempts = parseInt(process.env.LOGIN_MAX_FAILED_ATTEMPTS || '5', 10)
-const lockout_minutes = parseInt(process.env.LOGIN_LOCKOUT_MINUTES || '15', 10)
+// ====== Mail transport for OTP emails ======
+let mailTransporter = null
 
-const failed_login_by_email = new Map()
+if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+  mailTransporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT) || 587,
+    secure: false,
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS
+    }
+  })
+} else {
+  console.warn('[Auth] SMTP is not fully configured; OTP emails may not be sent.')
+}
 
-function normalize_email(email) {
-  if (typeof email !== 'string') {
+async function sendOtpEmail(email, otp) {
+  console.log('[Auth] Generated OTP for', email, '=>', otp)
+
+  if (!mailTransporter) {
+    console.warn('[Auth] No SMTP transporter configured. OTP will not be emailed.')
+    return
+  }
+
+  const from = process.env.MAIL_FROM || process.env.SMTP_USER
+
+  const mailOptions = {
+    from,
+    to: email,
+    subject: 'Your AgriQual verification code',
+    text: `Your verification code is: ${otp}\n\nIt will expire in 10 minutes.`,
+    html: `<p>Your verification code is: <strong>${otp}</strong></p><p>It will expire in 10 minutes.</p>`
+  }
+
+  try {
+    await mailTransporter.sendMail(mailOptions)
+    console.log('[Auth] OTP email sent to', email)
+  } catch (error) {
+    const message = error && error.message ? error.message : error
+    console.error('[Auth] Failed to send OTP email:', message)
+    // We still keep the OTP stored; frontend can use debug_otp in non-production
+  }
+}
+
+// ====== Helpers ======
+function normalizeEmail(email) {
+  if (!email) {
     return ''
   }
-  return email.trim().toLowerCase()
+  return String(email).trim().toLowerCase()
 }
 
-function validate_email_format(email) {
-  const email_regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-  const is_valid = email_regex.test(email)
-  return is_valid
+function validateEmail(email) {
+  const value = normalizeEmail(email)
+  const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+  return re.test(value)
 }
 
-function validate_password_strength(password) {
+function validatePasswordStrength(password) {
   if (typeof password !== 'string') {
     return 'Password is required'
   }
-
   if (password.length < 8) {
     return 'Password must be at least 8 characters long'
   }
-
-  const has_uppercase = /[A-Z]/.test(password)
-  const has_lowercase = /[a-z]/.test(password)
-  const has_digit = /[0-9]/.test(password)
-  const has_symbol = /[^A-Za-z0-9]/.test(password)
-
-  if (!has_uppercase) {
-    return 'Password must contain at least one uppercase letter'
+  // Optional extra strength checks:
+  // at least one letter and one digit
+  if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
+    return 'Password must contain at least one letter and one number'
   }
-
-  if (!has_lowercase) {
-    return 'Password must contain at least one lowercase letter'
-  }
-
-  if (!has_digit) {
-    return 'Password must contain at least one number'
-  }
-
-  if (!has_symbol) {
-    return 'Password must contain at least one special character'
-  }
-
   return null
 }
 
-function sanitize_user(user) {
-  return {
-    id: user._id,
-    _id: user._id,
-    name: user.name,
-    email: user.email,
-    phone: user.phone,
-    role: user.role
-  }
-}
-
-function create_jwt_for_user(user) {
+function createTokenForUser(user) {
   const payload = {
-    sub: String(user._id),
-    role: user.role
+    sub: user._id.toString(),
+    role: user.role || 'farmer'
   }
 
-  const token = jwt.sign(payload, jwt_secret, { expiresIn: jwt_expires_in })
+  const token = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN })
+
   return token
 }
 
-function get_client_ip(request) {
-  const forwarded_for = request.headers['x-forwarded-for']
-  if (typeof forwarded_for === 'string' && forwarded_for.length > 0) {
-    const parts = forwarded_for.split(',')
-    if (parts.length > 0) {
-      const first = parts[0].trim()
-      if (first.length > 0) {
-        return first
-      }
-    }
-  }
-
-  if (request.ip) {
-    return request.ip
-  }
-
-  if (request.connection && request.connection.remoteAddress) {
-    return request.connection.remoteAddress
-  }
-
-  return 'unknown'
-}
-
-function enforce_https_if_production(request, response, next) {
-  const is_production = process.env.NODE_ENV === 'production'
-  if (!is_production) {
-    next()
-    return
-  }
-
-  const x_forwarded_proto = request.headers['x-forwarded-proto']
-  const is_secure = request.secure === true || x_forwarded_proto === 'https'
-
-  if (is_secure) {
-    next()
-    return
-  }
-
-  response.status(400).json({
-    message: 'HTTPS is required for this endpoint'
-  })
-}
-
-function get_failed_record(email) {
-  const key = normalize_email(email)
-  const existing = failed_login_by_email.get(key)
-  if (!existing) {
-    const record = {
-      failed_count: 0,
-      locked_until: null
-    }
-    failed_login_by_email.set(key, record)
-    return record
-  }
-  return existing
-}
-
-function get_lockout_seconds_remaining(record) {
-  if (!record || !record.locked_until) {
+function getLockoutSeconds(lockUntil) {
+  if (!lockUntil) {
     return 0
   }
   const now = Date.now()
-  const diff_ms = record.locked_until.getTime() - now
-  if (diff_ms <= 0) {
+  const diffMs = lockUntil.getTime() - now
+  if (diffMs <= 0) {
     return 0
   }
-  const seconds = Math.ceil(diff_ms / 1000)
-  return seconds
+  return Math.round(diffMs / 1000)
 }
 
-function is_email_locked(email) {
-  const record = get_failed_record(email)
-  const seconds_remaining = get_lockout_seconds_remaining(record)
-  if (seconds_remaining > 0) {
-    return {
-      is_locked: true,
-      retry_after_seconds: seconds_remaining
-    }
-  }
-  return {
-    is_locked: false,
-    retry_after_seconds: 0
-  }
-}
-
-function register_failed_login(email) {
-  const record = get_failed_record(email)
-  const now = Date.now()
-  const is_currently_locked = get_lockout_seconds_remaining(record) > 0
-  if (is_currently_locked) {
-    const seconds_remaining = get_lockout_seconds_remaining(record)
-    return {
-      is_locked: true,
-      retry_after_seconds: seconds_remaining
-    }
-  }
-
-  record.failed_count += 1
-
-  if (record.failed_count >= max_failed_attempts) {
-    const lock_until = new Date(now + lockout_minutes * 60 * 1000)
-    record.locked_until = lock_until
-    record.failed_count = 0
-    const seconds = get_lockout_seconds_remaining(record)
-    return {
-      is_locked: true,
-      retry_after_seconds: seconds
-    }
-  }
-
-  failed_login_by_email.set(normalize_email(email), record)
-  return {
-    is_locked: false,
-    retry_after_seconds: 0
-  }
-}
-
-function clear_failed_login(email) {
-  const key = normalize_email(email)
-  if (failed_login_by_email.has(key)) {
-    failed_login_by_email.delete(key)
-  }
-}
-
-async function log_login_attempt(options) {
+// ====== Registration with OTP ======
+// POST /api/auth/register-otp
+router.post('/register-otp', async function (request, response) {
   try {
+    const { name, email, phone, password, role } = request.body || {}
+
+    const normalizedEmail = normalizeEmail(email)
+
+    if (!name || !String(name).trim()) {
+      return response.status(400).json({ message: 'Name is required' })
+    }
+
+    if (!validateEmail(normalizedEmail)) {
+      return response.status(400).json({ message: 'Valid email is required' })
+    }
+
+    const passwordError = validatePasswordStrength(password)
+    if (passwordError) {
+      return response.status(400).json({ message: passwordError })
+    }
+
+    let user = await User.findOne({ email: normalizedEmail })
+
+    if (user && user.email_verified === true) {
+      return response
+        .status(400)
+        .json({ message: 'An account with this email already exists' })
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10)
+
+    if (!user) {
+      user = new User({
+        name: String(name).trim(),
+        email: normalizedEmail,
+        phone: phone || null,
+        role: role || 'farmer',
+        password_hash: passwordHash,
+        email_verified: false
+      })
+    } else {
+      user.name = String(name).trim()
+      user.phone = phone || user.phone || null
+      user.role = role || user.role || 'farmer'
+      user.password_hash = passwordHash
+      user.email_verified = false
+    }
+
+    // Generate 6-digit OTP
+    const otp = String(Math.floor(100000 + Math.random() * 900000))
+    const otpHash = await bcrypt.hash(otp, 10)
+
+    user.pending_otp_hash = otpHash
+    user.pending_otp_expires_at = new Date(Date.now() + 10 * 60 * 1000) // 10 minutes
+    user.failed_login_attempts = 0
+    user.lock_until = null
+
+    await user.save()
+
+    // Send OTP email (and also log it)
+    await sendOtpEmail(normalizedEmail, otp)
+
     const payload = {
-      email: normalize_email(options.email),
-      ip_address: options.ip_address,
-      user_agent: options.user_agent,
-      success: options.success,
-      reason: options.reason
+      ok: true,
+      message: 'Verification code has been sent to your email'
     }
 
-    if (options.user_id && mongoose.Types.ObjectId.isValid(String(options.user_id))) {
-      payload.user_id = options.user_id
+    // In non-production, also send OTP back for easier debugging
+    if (process.env.NODE_ENV !== 'production') {
+      payload.debug_otp = otp
     }
 
-    await LoginAttempt.create(payload)
+    return response.json(payload)
   } catch (error) {
-  }
-}
-
-router.post('/register-otp', enforce_https_if_production, async function (request, response) {
-  try {
-    const name = typeof request.body.name === 'string' ? request.body.name.trim() : ''
-    const raw_email = typeof request.body.email === 'string' ? request.body.email : ''
-    const email = normalize_email(raw_email)
-    const phone = typeof request.body.phone === 'string' ? request.body.phone.trim() : ''
-    const password = typeof request.body.password === 'string' ? request.body.password : ''
-    const raw_role = typeof request.body.role === 'string' ? request.body.role.trim() : ''
-    const allowed_roles = ['farmer', 'inspector']
-    const role = allowed_roles.includes(raw_role) ? raw_role : 'farmer'
-
-    if (name.length === 0 || name.length > 120) {
-      response.status(400).json({ message: 'Name is required and must be at most 120 characters' })
-      return
-    }
-
-    if (!validate_email_format(email)) {
-      response.status(400).json({ message: 'A valid email address is required' })
-      return
-    }
-
-    if (phone.length > 0 && phone.length > 40) {
-      response.status(400).json({ message: 'Phone number is too long' })
-      return
-    }
-
-    const password_error = validate_password_strength(password)
-    if (password_error) {
-      response.status(400).json({ message: password_error })
-      return
-    }
-
-    const existing_user = await User.findOne({ email }).exec()
-    if (existing_user) {
-      response.status(400).json({ message: 'An account with this email already exists' })
-      return
-    }
-
-    const password_hash = await bcrypt.hash(password, 12)
-
-    const otp_code = String(Math.floor(100000 + Math.random() * 900000))
-    const otp_expires_at = new Date(Date.now() + 10 * 60 * 1000)
-
-    const otp_payload = {
-      name,
-      email,
-      phone,
-      role,
-      password_hash,
-      otp_code,
-      otp_expires_at
-    }
-
-    const OtpModel =
-      mongoose.models.SignupOtp ||
-      mongoose.model(
-        'SignupOtp',
-        new mongoose.Schema(
-          {
-            name: String,
-            email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-            phone: String,
-            role: { type: String, default: 'farmer' },
-            password_hash: { type: String, required: true },
-            otp_code: { type: String, required: true },
-            otp_expires_at: { type: Date, required: true }
-          },
-          { timestamps: true }
-        )
-      )
-
-    await OtpModel.findOneAndUpdate({ email }, otp_payload, {
-      upsert: true,
-      new: true,
-      setDefaultsOnInsert: true
-    }).exec()
-
-    response.json({
-      message: 'Verification code sent to your email address'
-    })
-  } catch (error) {
-    response.status(500).json({
-      message: 'Failed to start registration'
-    })
+    const message = error && error.message ? error.message : error
+    console.error('[Auth] /register-otp error:', message)
+    return response.status(500).json({ message: 'Registration failed' })
   }
 })
 
-router.post('/verify-otp', enforce_https_if_production, async function (request, response) {
+// ====== Verify OTP ======
+// POST /api/auth/verify-otp
+router.post('/verify-otp', async function (request, response) {
   try {
-    const raw_email = typeof request.body.email === 'string' ? request.body.email : ''
-    const email = normalize_email(raw_email)
-    const otp_input = typeof request.body.otp === 'string' ? request.body.otp.trim() : ''
+    const { email, otp } = request.body || {}
 
-    if (!validate_email_format(email)) {
-      response.status(400).json({ message: 'Invalid verification code or email' })
-      return
+    const normalizedEmail = normalizeEmail(email)
+    const code = String(otp || '').trim()
+
+    if (!validateEmail(normalizedEmail)) {
+      return response.status(400).json({ message: 'Valid email is required' })
     }
 
-    if (otp_input.length < 4 || otp_input.length > 10) {
-      response.status(400).json({ message: 'Invalid verification code or email' })
-      return
+    if (!code || code.length < 4) {
+      return response.status(400).json({ message: 'OTP code is required' })
     }
 
-    const OtpModel =
-      mongoose.models.SignupOtp ||
-      mongoose.model(
-        'SignupOtp',
-        new mongoose.Schema(
-          {
-            name: String,
-            email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-            phone: String,
-            role: { type: String, default: 'farmer' },
-            password_hash: { type: String, required: true },
-            otp_code: { type: String, required: true },
-            otp_expires_at: { type: Date, required: true }
-          },
-          { timestamps: true }
-        )
-      )
+    const user = await User.findOne({ email: normalizedEmail })
 
-    const otp_record = await OtpModel.findOne({ email }).exec()
-    if (!otp_record) {
-      response.status(400).json({ message: 'Invalid or expired verification code' })
-      return
+    if (!user || !user.pending_otp_hash || !user.pending_otp_expires_at) {
+      return response.status(400).json({ message: 'Invalid or expired verification code' })
     }
 
     const now = new Date()
-    if (!otp_record.otp_expires_at || otp_record.otp_expires_at.getTime() < now.getTime()) {
-      await OtpModel.deleteOne({ _id: otp_record._id }).exec()
-      response.status(400).json({ message: 'Invalid or expired verification code' })
-      return
+    if (user.pending_otp_expires_at <= now) {
+      return response.status(400).json({ message: 'Verification code has expired' })
     }
 
-    if (otp_record.otp_code !== otp_input) {
-      response.status(400).json({ message: 'Invalid or expired verification code' })
-      return
+    const isMatch = await bcrypt.compare(code, user.pending_otp_hash)
+    if (isMatch !== true) {
+      return response.status(400).json({ message: 'Invalid verification code' })
     }
 
-    let user = await User.findOne({ email }).exec()
-    if (!user) {
-      user = new User({
-        name: otp_record.name,
-        email: otp_record.email,
-        phone: otp_record.phone,
-        role: otp_record.role,
-        password_hash: otp_record.password_hash
-      })
-    } else {
-      user.name = otp_record.name
-      user.phone = otp_record.phone
-      user.role = otp_record.role
-      user.password_hash = otp_record.password_hash
-    }
+    user.email_verified = true
+    user.pending_otp_hash = undefined
+    user.pending_otp_expires_at = undefined
+    user.failed_login_attempts = 0
+    user.lock_until = null
 
     await user.save()
-    await OtpModel.deleteOne({ _id: otp_record._id }).exec()
 
-    const token = create_jwt_for_user(user)
-    const safe_user = sanitize_user(user)
+    const token = createTokenForUser(user)
 
-    response.json({
+    const safeUser = {
+      id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      role: user.role || 'farmer'
+    }
+
+    return response.json({
       token,
-      user: safe_user
+      user: safeUser
     })
   } catch (error) {
-    response.status(500).json({
-      message: 'Verification failed'
-    })
+    const message = error && error.message ? error.message : error
+    console.error('[Auth] /verify-otp error:', message)
+    return response.status(500).json({ message: 'OTP verification failed' })
   }
 })
 
-router.post('/login', enforce_https_if_production, async function (request, response) {
-  const ip_address = get_client_ip(request)
-  const user_agent = typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : ''
-
+// ====== Login ======
+// POST /api/auth/login
+router.post('/login', async function (request, response) {
   try {
-    const raw_email = typeof request.body.email === 'string' ? request.body.email : ''
-    const email = normalize_email(raw_email)
-    const password = typeof request.body.password === 'string' ? request.body.password : ''
+    const { email, password } = request.body || {}
 
-    if (!validate_email_format(email) || password.length === 0) {
-      await log_login_attempt({
-        email,
-        user_id: null,
-        ip_address,
-        user_agent,
-        success: false,
-        reason: 'invalid_request'
-      })
-      response.status(400).json({ message: 'Invalid email or password' })
-      return
+    const normalizedEmail = normalizeEmail(email)
+
+    // Basic validation
+    if (!validateEmail(normalizedEmail)) {
+      return response.status(400).json({ message: 'Valid email is required' })
     }
 
-    const lock_status = is_email_locked(email)
-    if (lock_status.is_locked) {
-      await log_login_attempt({
-        email,
-        user_id: null,
-        ip_address,
-        user_agent,
-        success: false,
-        reason: 'account_locked'
-      })
-      const seconds = lock_status.retry_after_seconds
-      const minutes_remaining = Math.ceil(seconds / 60)
-      response.status(429).json({
-        message: 'Too many failed login attempts. Please try again later.',
-        retryAfterSeconds: seconds,
-        retryAfterMinutes: minutes_remaining
-      })
-      return
+    if (!password || typeof password !== 'string') {
+      return response.status(400).json({ message: 'Password is required' })
     }
 
-    const user = await User.findOne({ email }).exec()
+    const user = await User.findOne({ email: normalizedEmail })
 
-    let stored_hash = null
-    if (user && typeof user.password_hash === 'string' && user.password_hash.length > 0) {
-      stored_hash = user.password_hash
-    } else if (user && typeof user.password === 'string' && user.password.length > 0) {
-      stored_hash = user.password
+    // Audit log (no success/fail detail leaked to client)
+    const baseLog = {
+      email: normalizedEmail,
+      ip: request.ip,
+      time: new Date().toISOString()
     }
 
-    let password_matches = false
+    // If user doesn't exist, respond with generic error (no enumeration)
+    if (!user) {
+      console.log('[Auth][login] failed (no such user):', baseLog)
+      return response.status(401).json({ message: 'Invalid email or password' })
+    }
 
-    if (user && stored_hash) {
-      const looks_like_bcrypt =
-        stored_hash.startsWith('$2a$') ||
-        stored_hash.startsWith('$2b$') ||
-        stored_hash.startsWith('$2y$')
+    // Check lockout
+    const now = new Date()
 
-      if (looks_like_bcrypt) {
-        password_matches = await bcrypt.compare(password, stored_hash)
-      } else {
-        if (stored_hash === password) {
-          password_matches = true
-          const new_hash = await bcrypt.hash(password, 12)
-          user.password_hash = new_hash
-          user.password = undefined
-          await user.save()
-        }
+    if (user.lock_until && user.lock_until > now) {
+      const secondsLeft = getLockoutSeconds(user.lock_until)
+      console.log('[Auth][login] locked out:', {
+        ...baseLog,
+        lockedUntil: user.lock_until.toISOString(),
+        secondsLeft
+      })
+
+      return response.status(429).json({
+        message: 'Too many failed login attempts. Your account is temporarily locked.',
+        retryAfterSeconds: secondsLeft
+      })
+    }
+
+    const storedHash = user.password_hash || user.password
+    if (!storedHash) {
+      console.log('[Auth][login] failed (no password hash):', baseLog)
+      return response.status(401).json({ message: 'Invalid email or password' })
+    }
+
+    const isMatch = await bcrypt.compare(password, storedHash)
+
+    if (!isMatch) {
+      user.failed_login_attempts = (user.failed_login_attempts || 0) + 1
+
+      if (user.failed_login_attempts >= LOGIN_MAX_FAILED_ATTEMPTS) {
+        user.lock_until = new Date(
+          now.getTime() + LOGIN_LOCKOUT_MINUTES * 60 * 1000
+        )
       }
-    }
 
-    if (!user || !password_matches) {
-      const lock_after_failure = register_failed_login(email)
+      await user.save()
 
-      await log_login_attempt({
-        email,
-        user_id: user ? user._id : null,
-        ip_address,
-        user_agent,
-        success: false,
-        reason: lock_after_failure.is_locked ? 'lockout' : 'invalid_credentials'
-      })
-
-      if (lock_after_failure.is_locked) {
-        const seconds = lock_after_failure.retry_after_seconds
-        const minutes_remaining = Math.ceil(seconds / 60)
-        response.status(429).json({
-          message: 'Too many failed login attempts. Please try again later.',
-          retryAfterSeconds: seconds,
-          retryAfterMinutes: minutes_remaining
+      if (user.lock_until && user.lock_until > now) {
+        const secondsLeft = getLockoutSeconds(user.lock_until)
+        console.log('[Auth][login] account locked due to repeated failures:', {
+          ...baseLog,
+          failedAttempts: user.failed_login_attempts,
+          lockUntil: user.lock_until.toISOString(),
+          secondsLeft
         })
-        return
+
+        return response.status(429).json({
+          message: 'Too many failed login attempts. Your account is temporarily locked.',
+          retryAfterSeconds: secondsLeft
+        })
       }
 
-      response.status(401).json({ message: 'Invalid email or password' })
-      return
+      console.log('[Auth][login] failed (wrong password):', {
+        ...baseLog,
+        failedAttempts: user.failed_login_attempts
+      })
+
+      return response.status(401).json({ message: 'Invalid email or password' })
     }
 
-    clear_failed_login(email)
+    // Successful login -> reset counters
+    user.failed_login_attempts = 0
+    user.lock_until = null
+    await user.save()
 
-    await log_login_attempt({
-      email,
-      user_id: user._id,
-      ip_address,
-      user_agent,
-      success: true,
-      reason: 'success'
-    })
+    const token = createTokenForUser(user)
 
-    const token = create_jwt_for_user(user)
-    const safe_user = sanitize_user(user)
+    const safeUser = {
+      id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      role: user.role || 'farmer'
+    }
 
-    response.json({
+    console.log('[Auth][login] success:', baseLog)
+
+    return response.json({
       token,
-      user: safe_user
+      user: safeUser
     })
   } catch (error) {
-    await log_login_attempt({
-      email: '',
-      user_id: null,
-      ip_address,
-      user_agent,
-      success: false,
-      reason: 'server_error'
+    const message = error && error.message ? error.message : error
+    console.error('[Auth] /login error:', message)
+    return response.status(500).json({ message: 'Login failed' })
+  }
+})
+
+// Optional legacy direct /register (without OTP) – kept for compatibility
+router.post('/register', async function (request, response) {
+  try {
+    const { name, email, phone, password, role } = request.body || {}
+
+    const normalizedEmail = normalizeEmail(email)
+
+    if (!name || !String(name).trim()) {
+      return response.status(400).json({ message: 'Name is required' })
+    }
+
+    if (!validateEmail(normalizedEmail)) {
+      return response.status(400).json({ message: 'Valid email is required' })
+    }
+
+    const passwordError = validatePasswordStrength(password)
+    if (passwordError) {
+      return response.status(400).json({ message: passwordError })
+    }
+
+    const existing = await User.findOne({ email: normalizedEmail })
+    if (existing) {
+      return response.status(400).json({ message: 'An account with this email already exists' })
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10)
+
+    const user = new User({
+      name: String(name).trim(),
+      email: normalizedEmail,
+      phone: phone || null,
+      role: role || 'farmer',
+      password_hash: passwordHash,
+      email_verified: true,
+      failed_login_attempts: 0,
+      lock_until: null
     })
 
-    response.status(500).json({
-      message: 'Login failed. Please try again.'
+    await user.save()
+
+    const token = createTokenForUser(user)
+
+    const safeUser = {
+      id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      role: user.role || 'farmer'
+    }
+
+    return response.json({
+      token,
+      user: safeUser
     })
+  } catch (error) {
+    const message = error && error.message ? error.message : error
+    console.error('[Auth] /register error:', message)
+    return response.status(500).json({ message: 'Registration failed' })
   }
 })
 
