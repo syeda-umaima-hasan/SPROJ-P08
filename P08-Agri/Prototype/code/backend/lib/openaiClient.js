@@ -22,8 +22,9 @@ if (api_key) {
 
 async function get_weather_llm_advice(payload) {
   if (!openai_client) {
-    console.warn('[OpenAI] get_weather_llm_advice called but client is null (no api key)')
-    return null
+    const msg = 'OpenAI client is null (likely no API key on server)'
+    console.warn('[OpenAI]', msg)
+    return { text: null, error: msg }
   }
 
   try {
@@ -91,12 +92,13 @@ async function get_weather_llm_advice(payload) {
       response.choices[0].message.content
 
     if (!content) {
-      console.warn('[OpenAI] empty content returned from weather advice call')
-      return null
+      const msg = 'Empty content returned from OpenAI weather advice call'
+      console.warn('[OpenAI]', msg)
+      return { text: null, error: msg }
     }
 
     console.log('[OpenAI] weather advice generated successfully')
-    return String(content).trim()
+    return { text: String(content).trim(), error: null }
   } catch (error) {
     const status = error && error.status
     const detail =
@@ -105,10 +107,10 @@ async function get_weather_llm_advice(payload) {
         error.response.data &&
         (error.response.data.message || error.response.data.error)) ||
       error.message ||
-      error
+      String(error)
 
     console.error('[OpenAI] error while generating weather advice. status=', status, 'detail=', detail)
-    return null
+    return { text: null, error: 'status=' + status + ' detail=' + detail }
   }
 }
 

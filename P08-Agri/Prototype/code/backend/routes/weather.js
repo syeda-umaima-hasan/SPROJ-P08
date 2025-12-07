@@ -3,7 +3,6 @@ const router = express.Router()
 const fetch = require('node-fetch')
 const { get_weather_llm_advice } = require('../lib/openaiClient')
 
-const WEATHER_API_KEY = process.env.WEATHER_API_KEY
 const WEATHER_API_URL = 'https://api.open-meteo.com/v1/forecast'
 
 function build_rule_based_advice(today) {
@@ -109,7 +108,7 @@ router.get('/', async function (request, response) {
 
     const advice = build_rule_based_advice(today)
 
-    const response_payload = {
+    const base_payload = {
       city: data.timezone || 'Your location',
       latitude,
       longitude,
@@ -118,30 +117,32 @@ router.get('/', async function (request, response) {
       advice
     }
 
-    console.log('[Weather] base payload built for frontend and LLM:', {
-      city: response_payload.city,
-      current: response_payload.current,
-      today: response_payload.today,
-      advice_count: response_payload.advice.length
+    console.log('[Weather] base payload for frontend + LLM:', {
+      city: base_payload.city,
+      current: base_payload.current,
+      today: base_payload.today,
+      advice_count: base_payload.advice.length
     })
 
     let llm_advice = null
+    let llm_error = null
 
     try {
-      llm_advice = await get_weather_llm_advice(response_payload)
+      const result = await get_weather_llm_advice(base_payload)
+      llm_advice = result.text
+      llm_error = result.error
     } catch (error) {
-      console.error(
-        '[Weather] unexpected error while calling get_weather_llm_advice:',
-        error.message || error
-      )
+      llm_error = error.message || String(error)
+      console.error('[Weather] unexpected error while calling get_weather_llm_advice:', llm_error)
     }
 
-    if (!llm_advice) {
-      console.warn('[Weather] llm_advice is null; either no api key or LLM call failed')
+    if (llm_error) {
+      console.warn('[Weather] llm_error:', llm_error)
     }
 
-    const final_payload = Object.assign({}, response_payload, {
-      llm_advice
+    const final_payload = Object.assign({}, base_payload, {
+      llm_advice,
+      llm_error
     })
 
     return response.json(final_payload)
