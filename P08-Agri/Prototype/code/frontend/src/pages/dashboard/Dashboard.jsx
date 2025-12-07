@@ -484,6 +484,16 @@ function Dashboard() {
                   </li>
                 ))}
               </ul>
+              {weather_data.llm_advice && (
+                <div className="mt-4 bg-green-50 border border-green-100 rounded-lg p-4">
+                  <h4 className="text-md font-semibold text-green-900 mb-2">
+                    AI Assistant Advice
+                  </h4>
+                  <p className="text-sm text-green-900 whitespace-pre-line">
+                    {weather_data.llm_advice}
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         )}
