@@ -1,5 +1,5 @@
 const express = require('express')
-const bcrypt = require('bcrypt')
+const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
 const crypto = require('crypto')
 const nodemailer = require('nodemailer')
@@ -79,8 +79,6 @@ function validatePasswordStrength(password) {
   if (password.length < 8) {
     return 'Password must be at least 8 characters long'
   }
-  // Optional extra strength checks:
-  // at least one letter and one digit
   if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
     return 'Password must contain at least one letter and one number'
   }
@@ -158,18 +156,16 @@ router.post('/register-otp', async function (request, response) {
       user.email_verified = false
     }
 
-    // Generate 6-digit OTP
     const otp = String(Math.floor(100000 + Math.random() * 900000))
     const otpHash = await bcrypt.hash(otp, 10)
 
     user.pending_otp_hash = otpHash
-    user.pending_otp_expires_at = new Date(Date.now() + 10 * 60 * 1000) // 10 minutes
+    user.pending_otp_expires_at = new Date(Date.now() + 10 * 60 * 1000)
     user.failed_login_attempts = 0
     user.lock_until = null
 
     await user.save()
 
-    // Send OTP email (and also log it)
     await sendOtpEmail(normalizedEmail, otp)
 
     const payload = {
@@ -177,7 +173,6 @@ router.post('/register-otp', async function (request, response) {
       message: 'Verification code has been sent to your email'
     }
 
-    // In non-production, also send OTP back for easier debugging
     if (process.env.NODE_ENV !== 'production') {
       payload.debug_otp = otp
     }
@@ -259,7 +254,6 @@ router.post('/login', async function (request, response) {
 
     const normalizedEmail = normalizeEmail(email)
 
-    // Basic validation
     if (!validateEmail(normalizedEmail)) {
       return response.status(400).json({ message: 'Valid email is required' })
     }
@@ -270,20 +264,17 @@ router.post('/login', async function (request, response) {
 
     const user = await User.findOne({ email: normalizedEmail })
 
-    // Audit log (no success/fail detail leaked to client)
     const baseLog = {
       email: normalizedEmail,
       ip: request.ip,
       time: new Date().toISOString()
     }
 
-    // If user doesn't exist, respond with generic error (no enumeration)
     if (!user) {
       console.log('[Auth][login] failed (no such user):', baseLog)
       return response.status(401).json({ message: 'Invalid email or password' })
     }
 
-    // Check lockout
     const now = new Date()
 
     if (user.lock_until && user.lock_until > now) {
@@ -342,7 +333,6 @@ router.post('/login', async function (request, response) {
       return response.status(401).json({ message: 'Invalid email or password' })
     }
 
-    // Successful login -> reset counters
     user.failed_login_attempts = 0
     user.lock_until = null
     await user.save()
