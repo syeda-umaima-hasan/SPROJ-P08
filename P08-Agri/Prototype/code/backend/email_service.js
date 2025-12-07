@@ -47,16 +47,21 @@ async function send_help_email(payload) {
   const subject_raw = payload && payload.subject ? payload.subject : ''
   const message_raw = payload && payload.message ? payload.message : ''
   const user_email_raw = payload && payload.userEmail ? payload.userEmail : ''
+  const ticket_id_raw = payload && payload.ticketId ? payload.ticketId : ''
 
   const subject = String(subject_raw)
   const message = String(message_raw)
   const user_email = String(user_email_raw || '').trim()
+  const ticket_id = String(ticket_id_raw || '').trim()
 
-  const to_email = '26100370@lums.edu.pk'
+  const to_email = process.env.SUPPORT_TO_EMAIL || '26100370@lums.edu.pk'
 
   if (!process.env.SMTP_USER) {
     console.log('Help email (not actually sent). To:', to_email)
     console.log('From user:', user_email || 'Unknown user')
+    if (ticket_id) {
+      console.log('Ticket ID:', ticket_id)
+    }
     console.log('Subject:', subject)
     console.log('Message:', message)
     return
@@ -65,14 +70,19 @@ async function send_help_email(payload) {
   const from_email = process.env.EMAIL_FROM || process.env.SMTP_USER
   const final_subject = '[AgriQual Help] ' + subject
 
-  const body_lines = [
-    'New help request from: ' + (user_email || 'Unknown user'),
-    '',
-    'Subject: ' + subject,
-    '',
-    'Message:',
-    message
-  ]
+  const body_lines = []
+
+  if (ticket_id) {
+    body_lines.push('Ticket ID: ' + ticket_id)
+    body_lines.push('')
+  }
+
+  body_lines.push('New help request from: ' + (user_email || 'Unknown user'))
+  body_lines.push('')
+  body_lines.push('Subject: ' + subject)
+  body_lines.push('')
+  body_lines.push('Message:')
+  body_lines.push(message)
 
   const mail_options = {
     from: from_email,

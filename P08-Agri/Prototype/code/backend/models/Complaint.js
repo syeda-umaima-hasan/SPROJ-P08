@@ -10,22 +10,31 @@ const complaint_schema = new mongoose.Schema(
     },
     userId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User'
+      ref: 'User',
+      required: true
     },
     subject: {
       type: String,
       required: true,
-      trim: true
+      trim: true,
+      maxlength: 200
     },
     message: {
       type: String,
       required: true,
-      trim: true
+      trim: true,
+      maxlength: 4000
     },
     status: {
       type: String,
       enum: ['not addressed', 'addressed'],
       default: 'not addressed'
+    },
+    ip_address: {
+      type: String
+    },
+    user_agent: {
+      type: String
     }
   },
   {

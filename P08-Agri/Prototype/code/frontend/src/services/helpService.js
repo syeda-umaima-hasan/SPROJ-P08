@@ -7,6 +7,7 @@ const from_env =
 
 const is_localhost = typeof window !== 'undefined' && window.location.hostname === 'localhost'
 const is_vercel = typeof window !== 'undefined' && /\.vercel\.app$/.test(window.location.hostname)
+
 const api_base =
   from_env || (is_localhost ? 'http://localhost:5000' : (is_vercel ? '' : 'https://sproj-p08-2.onrender.com'))
 
@@ -21,26 +22,76 @@ export async function send_complaint(payload) {
     throw new Error('You must be logged in to send a help request')
   }
 
-  const subject = payload && payload.subject ? String(payload.subject).trim() : ''
-  const message = payload && payload.message ? String(payload.message).trim() : ''
+  const subject_raw = payload && payload.subject ? String(payload.subject) : ''
+  const message_raw = payload && payload.message ? String(payload.message) : ''
 
-  if (!subject || !message) {
+  const subject = subject_raw.trim()
+  const message = message_raw.trim()
+
+  if (!subject && !message) {
     throw new Error('Subject and message are required')
+  }
+
+  if (!subject) {
+    throw new Error('Subject is required')
+  }
+
+  if (!message) {
+    throw new Error('Message is required')
   }
 
   try {
     const response = await help_api.post(
       '/complaints',
       { subject, message },
-      { headers: { Authorization: 'Bearer ' + token } }
+      {
+        headers: {
+          Authorization: 'Bearer ' + token
+        }
+      }
     )
+
     return response.data
   } catch (error) {
-    const message_text =
+    let message_text =
       (error &&
         error.response &&
-        (error.response.data && (error.response.data.message || error.response.data.error))) ||
+        error.response.data &&
+        (error.response.data.message || error.response.data.error)) ||
       'Failed to send help request'
+
+    if (error && error.response && error.response.status === 429) {
+      const retry_raw =
+        error.response.data && Number(error.response.data.retryAfterSeconds)
+
+      if (!Number.isNaN(retry_raw) && retry_raw > 0) {
+        const minutes = Math.floor(retry_raw / 60)
+        const seconds = retry_raw % 60
+
+        let time_part = ''
+        if (minutes > 0) {
+          time_part += `${minutes} minute${minutes === 1 ? '' : 's'}`
+        }
+        if (seconds > 0) {
+          if (time_part) {
+            time_part += ' and '
+          }
+          time_part += `${seconds} second${seconds === 1 ? '' : 's'}`
+        }
+        if (!time_part) {
+          time_part = `${retry_raw} seconds`
+        }
+
+        message_text = `${message_text} You can send another support request in approximately ${time_part}.`
+      }
+    }
+
     throw new Error(message_text)
   }
 }
+
+const helpService = {
+  send_complaint
+}
+
+export default helpService
