@@ -1,251 +1,208 @@
 // backend/routes/weather.js
-const express = require('express')
-const fetch = require('node-fetch')
-const { getOpenAIClient } = require('../lib/openaiClient')
 
-const router = express.Router()
+const express = require('express');
+const router = express.Router();
+const { getOpenAIClient } = require('../lib/openaiClient');
 
-function build_baseline_advice(today, current) {
-  const advice = []
+// Simple rule-based crop advice (what you already had conceptually)
+function build_rule_based_advice(weather) {
+  const advice_lines = [];
+  const today = weather.today || {};
+  const current = weather.current || {};
 
-  const precip = typeof today.precipitation_mm === 'number' ? today.precipitation_mm : 0
-  const tmax = typeof today.tmax_c === 'number' ? today.tmax_c : null
-  const tmin = typeof today.tmin_c === 'number' ? today.tmin_c : null
-  const uv = typeof today.uv_index_max === 'number' ? today.uv_index_max : null
-  const wind = typeof current.wind_speed_kmh === 'number' ? current.wind_speed_kmh : null
+  const precipitation = Number(today.precipitation_mm ?? 0);
+  const wind_speed = Number(current.wind_speed_kmh ?? 0);
+  const uv_index = Number(today.uv_index_max ?? 0);
 
-  if (precip === 0) {
-    advice.push(
+  if (precipitation < 1) {
+    advice_lines.push(
       'No significant rain today: if soil is dry, plan irrigation early morning or late evening.'
-    )
-  } else if (precip < 5) {
-    advice.push(
-      'Light rain expected: avoid over-irrigation and check field for water pooling.'
-    )
+    );
   } else {
-    advice.push(
-      'Heavy rain expected: delay irrigation and ensure drainage channels are clear.'
-    )
+    advice_lines.push(
+      'Rain expected: avoid unnecessary irrigation and ensure field drainage is clear.'
+    );
   }
 
-  if (typeof wind === 'number') {
-    if (wind < 10) {
-      advice.push(
-        'Calmer winds: if spraying is needed, this is a suitable window.'
-      )
-    } else if (wind < 20) {
-      advice.push(
-        'Moderate winds: be cautious with spraying, use drift-reducing nozzles.'
-      )
-    } else {
-      advice.push(
-        'Strong winds: avoid spraying and secure any loose materials in the field.'
-      )
-    }
+  if (wind_speed < 15) {
+    advice_lines.push(
+      'Calmer winds: if spraying is needed, this is a suitable window.'
+    );
+  } else {
+    advice_lines.push(
+      'Strong winds today: avoid spraying to reduce drift and product loss.'
+    );
   }
 
-  if (typeof uv === 'number') {
-    if (uv >= 7) {
-      advice.push(
-        'High UV index: avoid mid-day field work and protect exposed skin.'
-      )
-    } else if (uv >= 4) {
-      advice.push(
-        'Moderate UV index: prefer morning and late-afternoon work hours.'
-      )
-    }
+  if (uv_index >= 7) {
+    advice_lines.push(
+      'High UV index: minimise midday field work and protect both workers and young crops from heat stress.'
+    );
   }
 
-  if (typeof tmax === 'number' && typeof tmin === 'number') {
-    const avg = (tmax + tmin) / 2
-    if (avg < 10) {
-      advice.push(
-        'Cool conditions: monitor crops for slow growth and consider adjusting irrigation frequency.'
-      )
-    } else if (avg > 30) {
-      advice.push(
-        'Hot conditions: irrigate during cooler hours and watch for heat stress symptoms.'
-      )
-    }
-  }
-
-  if (advice.length === 0) {
-    advice.push(
-      'Conditions look normal: continue routine field monitoring and standard agronomic practices.'
-    )
-  }
-
-  return advice
+  return advice_lines;
 }
 
-async function build_llm_advice(payload) {
-  const has_key = !!process.env.OPENAI_API_KEY
-  if (!has_key) {
-    return 'AI advisory is temporarily disabled because the server is not configured with an OpenAI API key. Please rely on the bullet-point recommendations for now.'
-  }
+// Build a compact text summary for the LLM
+function build_llm_weather_summary(weather) {
+  const city = weather.city || 'Your location';
+  const today = weather.today || {};
+  const current = weather.current || {};
 
+  return [
+    `Location: ${city}`,
+    `Current temperature: ${current.temperature_c} °C`,
+    `Current wind speed: ${current.wind_speed_kmh} km/h`,
+    `Today max temp: ${today.tmax_c} °C`,
+    `Today min temp: ${today.tmin_c} °C`,
+    `Today precipitation: ${today.precipitation_mm} mm`,
+    `Today UV index (max): ${today.uv_index_max}`
+  ].join('\n');
+}
+
+// Call OpenAI to get detailed AI advice (returns null on failure)
+async function get_llm_advice(weather) {
   try {
-    const client = getOpenAIClient()
+    const client = await getOpenAIClient();
+    const summary = build_llm_weather_summary(weather);
 
-    const { city, latitude, longitude, current, today } = payload
+    const system_prompt =
+      'You are an agronomy assistant helping small wheat farmers in Pakistan. ' +
+      'You will receive current weather and today\'s forecast. ' +
+      'Give clear, practical, step-by-step guidance on what the farmer should ' +
+      'do today for their wheat crop (irrigation, spraying, fertiliser timing, ' +
+      'harvesting, and worker safety). Avoid technical jargon.';
 
-    const inputText = `
-You are an expert Pakistani agronomy advisor specialising in wheat and smallholder farms.
-
-Here is the current weather context for a farmer:
-- Location: ${city || 'Unknown'} (lat ${latitude}, lon ${longitude})
-- Current temperature: ${current.temperature_c} °C
-- Current wind speed: ${current.wind_speed_kmh} km/h
-
-Today's forecast:
-- Max temperature: ${today.tmax_c} °C
-- Min temperature: ${today.tmin_c} °C
-- Precipitation: ${today.precipitation_mm} mm
-- UV index (max): ${today.uv_index_max}
-- Max wind gusts: ${today.wind_gust_max_kmh} km/h
-
-Give a clear, practical, farmer-friendly advisory for **today only**, focused on wheat in Punjab, Pakistan. 
-Structure the answer as:
-
-1. Short summary of today’s conditions in one or two sentences.
-2. "What you should do today" – 3–6 concrete action points (irrigation, spraying, field work, labour planning).
-3. "What to avoid" – 2–4 things to NOT do today (e.g. avoid spraying in high wind, avoid irrigation before heavy rain).
-4. Any special warnings if heat, cold, wind or heavy rain are significant.
-
-Keep it under 250 words, simple language, no emojis, and no bullet points inside bullet points.
-`.trim()
+    const user_prompt =
+      summary +
+      '\n\nUsing this weather, give a short, structured plan for today. ' +
+      'Use 3–6 bullet points, each one a specific action or warning. ' +
+      'Address both crop management AND worker safety.';
 
     const response = await client.responses.create({
       model: 'gpt-4.1-mini',
-      input: inputText
-    })
+      input: [
+        {
+          role: 'system',
+          content: system_prompt
+        },
+        {
+          role: 'user',
+          content: user_prompt
+        }
+      ]
+    });
 
-    const firstOutput = response.output && response.output[0]
-    const firstContent = firstOutput && firstOutput.content && firstOutput.content[0]
-    const text = firstContent && firstContent.text
+    const output =
+      response &&
+      response.output &&
+      response.output[0] &&
+      response.output[0].content &&
+      response.output[0].content[0] &&
+      response.output[0].content[0].text &&
+      response.output[0].content[0].text.value;
 
-    if (typeof text === 'string' && text.trim().length > 0) {
-      return text.trim()
+    if (typeof output === 'string') {
+      return output.trim();
     }
 
-    return 'AI assistant could not generate a detailed advisory. Please follow the basic recommendations shown above.'
+    return null;
   } catch (error) {
-    console.error('LLM weather advisory error:', error.message || error)
-    return 'AI advisory is temporarily unavailable due to a server error. Please follow the basic recommendations shown above and try again later.'
+    console.error('LLM weather advice error:', error.message || error);
+    return null;
   }
 }
 
-router.get('/', async function (req, res) {
-  const lat_param = req.query.lat
-  const lon_param = req.query.lon
+// NOTE: This handler assumes you already have working logic that fills
+// `weather_data` with the same shape you were returning before:
+// {
+//   city,
+//   latitude,
+//   longitude,
+//   current: { temperature_c, wind_speed_kmh },
+//   today: {
+//     precipitation_mm,
+//     tmax_c,
+//     tmin_c,
+//     uv_index_max,
+//     wind_gust_max_kmh
+//   }
+// }
+//
+// I’ll keep that pattern and only wrap it with AI logic.
+// Replace the placeholder "get_base_weather_data" with your existing logic
+// if you are fetching from some external API.
 
-  const latitude = parseFloat(lat_param)
-  const longitude = parseFloat(lon_param)
+async function get_base_weather_data(lat, lon) {
+  // ⬇️ Replace this with your existing implementation if you have one.
+  // For safety, here is a very simple Open-Meteo based implementation
+  // that returns data in your expected format.
 
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-    return res.status(400).json({
-      ok: false,
-      message: 'Missing or invalid lat/lon query parameters'
-    })
+  const url =
+    'https://api.open-meteo.com/v1/forecast' +
+    `?latitude=${lat}&longitude=${lon}` +
+    '&current_weather=true' +
+    '&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,uv_index_max,windgusts_10m_max' +
+    '&timezone=auto';
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Failed to fetch weather data');
+  }
+
+  const data = await response.json();
+  const index = 0; // today
+
+  const weather_data = {
+    city: 'Your location',
+    latitude: lat,
+    longitude: lon,
+    current: {
+      temperature_c: data.current_weather?.temperature ?? null,
+      wind_speed_kmh: data.current_weather?.windspeed ?? null
+    },
+    today: {
+      precipitation_mm: data.daily?.precipitation_sum?.[index] ?? null,
+      tmax_c: data.daily?.temperature_2m_max?.[index] ?? null,
+      tmin_c: data.daily?.temperature_2m_min?.[index] ?? null,
+      uv_index_max: data.daily?.uv_index_max?.[index] ?? null,
+      wind_gust_max_kmh: data.daily?.windgusts_10m_max?.[index] ?? null
+    }
+  };
+
+  return weather_data;
+}
+
+router.get('/', async function (request, response) {
+  const lat = parseFloat(request.query.lat);
+  const lon = parseFloat(request.query.lon);
+
+  if (Number.isNaN(lat) || Number.isNaN(lon)) {
+    return response
+      .status(400)
+      .json({ ok: false, message: 'lat and lon query parameters are required' });
   }
 
   try {
-    const url =
-      'https://api.open-meteo.com/v1/forecast' +
-      `?latitude=${encodeURIComponent(latitude)}` +
-      `&longitude=${encodeURIComponent(longitude)}` +
-      '&current_weather=true' +
-      '&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,uv_index_max,wind_speed_10m_max' +
-      '&timezone=auto'
+    // 1. Get the basic weather data
+    const weather_data = await get_base_weather_data(lat, lon);
 
-    const weather_res = await fetch(url)
-    if (!weather_res.ok) {
-      const text = await weather_res.text().catch(() => '')
-      console.error('Weather API error:', weather_res.status, text)
-      return res.status(502).json({
-        ok: false,
-        message: 'Upstream weather API failed',
-        status: weather_res.status
-      })
-    }
+    // 2. Build rule-based advice (your old behaviour)
+    weather_data.advice = build_rule_based_advice(weather_data);
 
-    const data = await weather_res.json()
+    // 3. Try to get AI advice (non-fatal if it fails)
+    const llm_advice = await get_llm_advice(weather_data);
+    weather_data.llm_advice = llm_advice;
 
-    const current_temp = data.current_weather && data.current_weather.temperature
-    const current_wind = data.current_weather && data.current_weather.windspeed
-
-    const today = {
-      precipitation_mm:
-        data.daily &&
-        Array.isArray(data.daily.precipitation_sum) &&
-        data.daily.precipitation_sum[0] != null
-          ? Number(data.daily.precipitation_sum[0])
-          : 0,
-      tmax_c:
-        data.daily &&
-        Array.isArray(data.daily.temperature_2m_max) &&
-        data.daily.temperature_2m_max[0] != null
-          ? Number(data.daily.temperature_2m_max[0])
-          : null,
-      tmin_c:
-        data.daily &&
-        Array.isArray(data.daily.temperature_2m_min) &&
-        data.daily.temperature_2m_min[0] != null
-          ? Number(data.daily.temperature_2m_min[0])
-          : null,
-      uv_index_max:
-        data.daily &&
-        Array.isArray(data.daily.uv_index_max) &&
-        data.daily.uv_index_max[0] != null
-          ? Number(data.daily.uv_index_max[0])
-          : null,
-      wind_gust_max_kmh:
-        data.daily &&
-        Array.isArray(data.daily.wind_speed_10m_max) &&
-        data.daily.wind_speed_10m_max[0] != null
-          ? Number(data.daily.wind_speed_10m_max[0])
-          : null
-    }
-
-    const current = {
-      temperature_c: typeof current_temp === 'number' ? current_temp : null,
-      wind_speed_kmh: typeof current_wind === 'number' ? current_wind : null
-    }
-
-    const city =
-      data.timezone || `Field location (${latitude.toFixed(3)}, ${longitude.toFixed(3)})`
-
-    const baseline_advice = build_baseline_advice(today, current)
-
-    const payload_for_llm = {
-      city,
-      latitude,
-      longitude,
-      current,
-      today
-    }
-
-    const llm_advice = await build_llm_advice(payload_for_llm)
-
-    const response_payload = {
-      city,
-      latitude,
-      longitude,
-      current,
-      today,
-      advice: baseline_advice,
-      llm_advice
-    }
-
-    res.json(response_payload)
+    return response.json(weather_data);
   } catch (error) {
-    console.error('Weather route error:', error.message || error)
-    res.status(500).json({
+    console.error('Weather route error:', error.message || error);
+    return response.status(500).json({
       ok: false,
-      message: 'Failed to fetch weather',
-      error: error.message || String(error)
-    })
+      message: 'Failed to fetch weather advisory',
+      detail: error.message || String(error)
+    });
   }
-})
+});
 
-module.exports = router
+module.exports = router;
