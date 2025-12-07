@@ -66,9 +66,8 @@ router.post('/complaints', async function (request, response) {
       }
     })
   } catch (error) {
-    const msg = error && error.message ? error.message : error
-    console.error('Help complaint error:', msg)
-    return response.status(500).json({ message: 'Server error' })
+    console.error('Help complaint error:', error.message || error)
+    return response.status(500).json({ message: 'Request failed' })
   }
 })
 

@@ -3,10 +3,20 @@ const axios = require('axios')
 const multer = require('multer')
 const FormData = require('form-data')
 const jwt = require('jsonwebtoken')
+const rateLimit = require('express-rate-limit')
 const Diagnosis = require('../models/Diagnosis')
 
 const router = express.Router()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } })
+
+// Priority 4: Rate limiting - 10 requests per minute per IP
+const diagnose_limiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 10, // 10 requests per window
+  message: { message: 'Too many diagnosis requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+})
 
 function get_auth_user(request) {
   const auth_header = request.headers.authorization || ''
@@ -33,15 +43,31 @@ function get_ml_service_url() {
   return ''
 }
 
-router.post('/', upload.single('image'), async (req, res) => {
+router.post('/', diagnose_limiter, upload.single('image'), async (req, res) => {
+  // Priority 1: Check authentication FIRST
+  const auth_user = get_auth_user(req)
+  if (!auth_user) {
+    res.status(401).json({ message: 'Unauthorized' })
+    return
+  }
+  
+  // Priority 2: Validate image is present
   if (!req.file) {
     res.status(400).json({ message: 'Image is required in field "image"' })
     return
   }
   
-  const auth_user = get_auth_user(req)
-  if (!auth_user) {
-    res.status(401).json({ message: 'Unauthorized' })
+  // Priority 2: Validate file size (max 10MB)
+  const max_size = 10 * 1024 * 1024
+  if (req.file.size > max_size) {
+    res.status(400).json({ message: 'Image size exceeds 10MB limit' })
+    return
+  }
+  
+  // Priority 2: Validate file type (only jpg, png)
+  const allowed_types = ['image/jpeg', 'image/jpg', 'image/png']
+  if (!allowed_types.includes(req.file.mimetype)) {
+    res.status(400).json({ message: 'Invalid image type. Only JPG and PNG are allowed' })
     return
   }
   
@@ -80,10 +106,11 @@ router.post('/', upload.single('image'), async (req, res) => {
     
     res.json(ml_resp.data)
   } catch (err) {
+    // Priority 3: Log detailed error but return generic message
+    console.error('Diagnosis error:', err.message || err)
     const status = err && err.response && err.response.status ? err.response.status : null
-    const data = err && err.response && err.response.data ? err.response.data : null
-    const safe_message = status === 404 ? 'ML endpoint not found' : status === 415 ? 'Unsupported image type' : status === 429 ? 'ML service rate-limited' : status ? `ML service error (${status})` : 'Network error contacting ML service'
-    res.status(502).json({ message: 'Diagnosis failed', detail: safe_message, upstream: data })
+    const safe_message = status === 404 ? 'ML service unavailable' : status === 415 ? 'Unsupported image format' : status === 429 ? 'Service temporarily busy' : 'Diagnosis request failed'
+    res.status(502).json({ message: safe_message })
   }
 })
 

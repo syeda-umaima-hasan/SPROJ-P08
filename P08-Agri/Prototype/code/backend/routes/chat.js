@@ -189,11 +189,10 @@ router.post('/', async function (request, response) {
       reply: assistant_message
     })
   } catch (error) {
-    const error_message = error && error.message ? error.message : error
-    console.error('Chat route error:', error_message)
+    // Priority 3: Log error but return generic message
+    console.error('Chat route error:', error.message || error)
     response.status(502).json({
-      message: 'Chatbot request failed',
-      detail: 'Upstream AI error or network issue'
+      message: 'Chat service temporarily unavailable'
     })
   }
 })

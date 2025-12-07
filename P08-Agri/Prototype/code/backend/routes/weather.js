@@ -150,7 +150,7 @@ router.get('/', async function (request, response) {
     console.error('[Weather] unhandled error:', error.message || error)
     return response.status(500).json({
       ok: false,
-      message: 'Internal server error while fetching weather'
+      message: 'Weather service temporarily unavailable'
     })
   }
 })

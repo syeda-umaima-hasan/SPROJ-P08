@@ -29,8 +29,18 @@ router.get('/', async (req, res) => {
       return res.status(401).json({ message: 'Unauthorized' })
     }
 
-    const limit = parseInt(req.query.limit) || 50
-    const skip = parseInt(req.query.skip) || 0
+    let limit = parseInt(req.query.limit) || 50
+    if (isNaN(limit) || limit <= 0) {
+      limit = 50
+    }
+    if (limit > 50) {
+      limit = 50
+    }
+    
+    let skip = parseInt(req.query.skip) || 0
+    if (isNaN(skip) || skip < 0) {
+      skip = 0
+    }
 
     const diagnoses = await Diagnosis.find({ user_id: auth_user.userId })
       .sort({ created_at: -1 })
@@ -49,7 +59,7 @@ router.get('/', async (req, res) => {
     })
   } catch (error) {
     console.error('Error fetching diagnosis history:', error.message || error)
-    res.status(500).json({ message: 'Failed to fetch diagnosis history' })
+    res.status(500).json({ message: 'Request failed' })
   }
 })
 
@@ -59,6 +69,11 @@ router.get('/:id', async (req, res) => {
     const auth_user = get_auth_user(req)
     if (!auth_user) {
       return res.status(401).json({ message: 'Unauthorized' })
+    }
+
+    const id_pattern = /^[0-9a-fA-F]{24}$/
+    if (!id_pattern.test(req.params.id)) {
+      return res.status(400).json({ message: 'Invalid diagnosis ID format' })
     }
 
     const diagnosis = await Diagnosis.findOne({
@@ -73,7 +88,7 @@ router.get('/:id', async (req, res) => {
     res.json(diagnosis)
   } catch (error) {
     console.error('Error fetching diagnosis:', error.message || error)
-    res.status(500).json({ message: 'Failed to fetch diagnosis' })
+    res.status(500).json({ message: 'Request failed' })
   }
 })
 
