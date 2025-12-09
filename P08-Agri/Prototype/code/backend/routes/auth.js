@@ -10,8 +10,8 @@ const router = express.Router()
 // ====== Security-related config ======
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me'
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '2h'
-const LOGIN_MAX_FAILED_ATTEMPTS = parseInt(process.env.LOGIN_MAX_FAILED_ATTEMPTS || '5', 10)
-const LOGIN_LOCKOUT_MINUTES = parseInt(process.env.LOGIN_LOCKOUT_MINUTES || '15', 10)
+const LOGIN_MAX_FAILED_ATTEMPTS = Number.parseInt(process.env.LOGIN_MAX_FAILED_ATTEMPTS || '5', 10)
+const LOGIN_LOCKOUT_MINUTES = Number.parseInt(process.env.LOGIN_LOCKOUT_MINUTES || '15', 10)
 
 // ====== Mail transport for OTP emails ======
 let mailTransporter = null
